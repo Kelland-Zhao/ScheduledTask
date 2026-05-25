@@ -25,10 +25,15 @@ function copyIoTDetailToFolder(e) {
 
   const enrichedData = sourceData.map(function(row, idx) {
     if (idx === 0) return row.concat(["HourSlot"]);
-    const d = row[0] ? new Date(row[0]) : null;
-    const hourSlot = (d && !isNaN(d.getTime()))
-      ? Utilities.formatDate(d, currentTimeZone, "yyyy-MM-dd") + "_" + Utilities.formatDate(d, currentTimeZone, "HH")
-      : "";
+    const d = row[0] instanceof Date ? row[0] : (row[0] ? new Date(row[0]) : null);
+    let hourSlot = "";
+    if (d && !isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const mo = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      const h = String(d.getHours()).padStart(2, "0");
+      hourSlot = y + "-" + mo + "-" + day + "_" + h;
+    }
     return row.concat([hourSlot]);
   });
 
@@ -39,8 +44,10 @@ function copyIoTDetailToFolder(e) {
     if (defaultSheet && destSS.getSheets().length > 1) destSS.deleteSheet(defaultSheet);
   }
   destSheet.clearContents();
-  if (enrichedData.length > 0) {
-    destSheet.getRange(1, 1, enrichedData.length, enrichedData[0].length).setValues(enrichedData);
+  const CHUNK = 50000;
+  for (let i = 0; i < enrichedData.length; i += CHUNK) {
+    const chunk = enrichedData.slice(i, i + CHUNK);
+    destSheet.getRange(i + 1, 1, chunk.length, enrichedData[0].length).setValues(chunk);
   }
 
   try { writeLog("copyIoTDetailToFolder", "成功", fileName + " 已写入 " + sourceData.length + " 行", e ? "定时" : "手动", ""); } catch (err) {}
