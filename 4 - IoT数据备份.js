@@ -23,6 +23,15 @@ function copyIoTDetailToFolder(e) {
   const sourceSheet = SpreadsheetApp.openById(IOT_SPREADSHEET_ID).getSheetByName(IOT_SOURCE_SHEET_NAME);
   const sourceData = sourceSheet.getDataRange().getValues();
 
+  const enrichedData = sourceData.map(function(row, idx) {
+    if (idx === 0) return row.concat(["HourSlot"]);
+    const d = row[0] ? new Date(row[0]) : null;
+    const hourSlot = (d && !isNaN(d.getTime()))
+      ? Utilities.formatDate(d, currentTimeZone, "yyyy-MM-dd") + "_" + Utilities.formatDate(d, currentTimeZone, "HH")
+      : "";
+    return row.concat([hourSlot]);
+  });
+
   let destSheet = destSS.getSheetByName(IOT_SOURCE_SHEET_NAME);
   if (!destSheet) {
     destSheet = destSS.insertSheet(IOT_SOURCE_SHEET_NAME);
@@ -30,8 +39,8 @@ function copyIoTDetailToFolder(e) {
     if (defaultSheet && destSS.getSheets().length > 1) destSS.deleteSheet(defaultSheet);
   }
   destSheet.clearContents();
-  if (sourceData.length > 0) {
-    destSheet.getRange(1, 1, sourceData.length, sourceData[0].length).setValues(sourceData);
+  if (enrichedData.length > 0) {
+    destSheet.getRange(1, 1, enrichedData.length, enrichedData[0].length).setValues(enrichedData);
   }
 
   try { writeLog("copyIoTDetailToFolder", "成功", fileName + " 已写入 " + sourceData.length + " 行", e ? "定时" : "手动", ""); } catch (err) {}
