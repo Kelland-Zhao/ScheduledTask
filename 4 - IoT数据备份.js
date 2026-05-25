@@ -6,7 +6,7 @@ const IOT_SOURCE_SHEET_NAME = "IoT_CT_Detail";
 const IOT_DEST_FOLDER_ID = "193URIPvHupVuxv0aN1kYC9ePYVkArKKs";
 
 /** 将 IoT_CT_Detail 数据复制到目标文件夹，每日一个 Spreadsheet（幂等）*/
-function copyIoTDetailToFolder() {
+function copyIoTDetailToFolder(e) {
   const today = Utilities.formatDate(new Date(), currentTimeZone, "yyyy-MM-dd");
   const fileName = IOT_SOURCE_SHEET_NAME + "_" + today;
   const destFolder = DriveApp.getFolderById(IOT_DEST_FOLDER_ID);
@@ -34,5 +34,5 @@ function copyIoTDetailToFolder() {
     destSheet.getRange(1, 1, sourceData.length, sourceData[0].length).setValues(sourceData);
   }
 
-  try { writeLog("copyIoTDetailToFolder", "成功", fileName + " 已写入 " + sourceData.length + " 行", "定时", ""); } catch (e) {}
+  try { writeLog("copyIoTDetailToFolder", "成功", fileName + " 已写入 " + sourceData.length + " 行", e ? "定时" : "手动", ""); } catch (err) {}
 }
