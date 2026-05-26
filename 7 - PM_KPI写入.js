@@ -1,10 +1,10 @@
-// V20260526.1 — PM KPI 数据写入
+// V20260526.2 — PM KPI 数据写入（仅写 A:D 列，E:J 由 ArrayFormula 自动计算）
 
 const PM_SOURCE_SS_ID = "1C7z16Ww22dfGxeqKRrBw27J-zmXXStAt2xoEYwL-V24";
 const PM_DEST_SS_ID   = "1KYRwzlYZz9OK8NPAkndhc9MxGlLEILYsRbsMkSvcV_U";
 const PM_KPI_SHEET    = "3.PM_KPI";
 
-/** 从 Master Data 计算并追加 PM KPI 数据到 3.PM_KPI（幂等） */
+/** 从 Master Data 计算并追加 PM KPI 数据到 3.PM_KPI（幂等，仅写 A:D） */
 function writePMKPI(e) {
   const trigger = e ? "定时" : "手动";
   try {
@@ -27,24 +27,22 @@ function writePMKPI(e) {
       tfTypeMap[String(tfRows[i][0]).trim()] = String(tfRows[i][2]).trim();
     }
 
-    // 3. PM_Target：Year_PM_Target_ID → Target（G列）
-    const ptRows = destSS.getSheetByName("PM_Target").getDataRange().getValues();
-    const ptMap = {};
-    for (let i = 1; i < ptRows.length; i++) {
-      const id = String(ptRows[i][0]).trim();
-      if (id) ptMap[id] = ptRows[i][6];
-    }
-
-    // 4. 已存在的 Monthly_PM_ID（幂等去重）
+    // 3. 已存在的 Month+Process（幂等去重）；扫描 A:B 列定位最后数据行
+    //    注：E:J 为 ArrayFormula，不能用 getLastRow() 定位，需扫描原始数据列
     const kpiSheet = destSS.getSheetByName(PM_KPI_SHEET);
-    const kpiRows  = kpiSheet.getDataRange().getValues();
+    const abVals   = kpiSheet.getRange("A:B").getValues();
     const existing = {};
-    for (let i = 0; i < kpiRows.length; i++) {
-      const id = String(kpiRows[i][8] || "").trim();
-      if (id) existing[id] = true;
+    let lastDataRow = 3; // 默认：header 在第3行，数据从第4行开始
+    for (let i = 3; i < abVals.length; i++) { // 从第4行(index=3)开始，跳过 header
+      const a = String(abVals[i][0] || "").trim();
+      const b = String(abVals[i][1] || "").trim();
+      if (a && b) {
+        existing[a + "_" + b] = true;
+        lastDataRow = i + 1; // 转为 1-indexed 行号
+      }
     }
 
-    // 5. SubProcess → Process 映射
+    // 4. SubProcess → Process 映射
     function mapProcess(sub, key, wc) {
       if (key === "IM" || sub === "IM") return "IM";
       if (key === "PK" || sub === "PK") return "PK";
@@ -61,8 +59,8 @@ function writePMKPI(e) {
       return null;
     }
 
-    // 6. 遍历 Master Data，按 (YearMonth, Process) 分组统计
-    //    groups[ym][proc] = { total, valid, sb(sumBefore), sa(sumAfter), cn(countAvg) }
+    // 5. 遍历 Master Data，按 (YearMonth, Process) 分组统计
+    //    groups[ym][proc] = { total, valid }
     const masterRows = srcSS.getSheetByName("Master Data").getDataRange().getValues();
     const groups = {};
 
@@ -76,14 +74,9 @@ function writePMKPI(e) {
       if (!ym) continue;
       const sub  = String(r[11] || "").trim(); // L: SubProcess
       const perf = String(r[13] || "").trim(); // N: 绩效状态
-      const ub   = r[8];                        // I: UPDT_BEFORE PM
-      const ua   = r[9];                        // J: UPDT_AFTER PM
 
       const proc = mapProcess(sub, key, wc);
       if (!proc) continue;
-
-      const ubN = typeof ub === "number" ? ub : parseFloat(ub);
-      const uaN = typeof ua === "number" ? ua : parseFloat(ua);
 
       // 子工序同时累加到 TF 汇总行
       const targets = [proc];
@@ -93,17 +86,13 @@ function writePMKPI(e) {
 
       targets.forEach(function(p) {
         if (!groups[ym])    groups[ym]    = {};
-        if (!groups[ym][p]) groups[ym][p] = { total: 0, valid: 0, sb: 0, sa: 0, cn: 0 };
-        const g = groups[ym][p];
-        g.total++;
-        if (perf === "好/Good") g.valid++;
-        if (!isNaN(ubN) && !isNaN(uaN) && ubN > 0 && uaN > 0) {
-          g.sb += ubN; g.sa += uaN; g.cn++;
-        }
+        if (!groups[ym][p]) groups[ym][p] = { total: 0, valid: 0 };
+        groups[ym][p].total++;
+        if (perf === "好/Good") groups[ym][p].valid++;
       });
     }
 
-    // 7. 构造待写入行（跳过已存在的 Monthly_PM_ID）
+    // 6. 构造待写入行（仅 A:D，跳过已存在的 Month+Process）
     const ORDER = ["IM", "AFT", "HSL+BOU", "ZAH", "TF", "PK"];
     const newRows = [];
 
@@ -111,13 +100,8 @@ function writePMKPI(e) {
       ORDER.forEach(function(proc) {
         const g = groups[ym][proc];
         if (!g) return;
-        const mid   = ym + "_" + proc;
-        if (existing[mid]) return;
-        const year  = String(ym).substring(0, 4);
-        const ytid  = year + "_" + proc;
-        const kpiPct = g.total > 0 ? g.valid / g.total : 0;
-        const pmPerf = g.cn > 0 ? g.sb / g.sa : "";
-        newRows.push([ym, proc, g.total, g.valid, kpiPct, pmPerf, year, ptMap[ytid] || "", mid, ytid]);
+        if (existing[ym + "_" + proc]) return;
+        newRows.push([Number(ym), proc, g.total, g.valid]);
       });
     });
 
@@ -126,12 +110,8 @@ function writePMKPI(e) {
       return;
     }
 
-    // 8. 追加写入 + 设置百分比格式（E/F/H列）
-    const lastRow = kpiSheet.getLastRow();
-    kpiSheet.getRange(lastRow + 1, 1, newRows.length, 10).setValues(newRows);
-    kpiSheet.getRange(lastRow + 1, 5, newRows.length, 1).setNumberFormat("0%");
-    kpiSheet.getRange(lastRow + 1, 6, newRows.length, 1).setNumberFormat("0.00%");
-    kpiSheet.getRange(lastRow + 1, 8, newRows.length, 1).setNumberFormat("0.00%");
+    // 7. 追加写入 A:D 列（E:J 由 ArrayFormula 自动填充）
+    kpiSheet.getRange(lastDataRow + 1, 1, newRows.length, 4).setValues(newRows);
 
     try { writeLog("writePMKPI", "成功", "写入 " + newRows.length + " 行到 " + PM_KPI_SHEET, trigger, ""); } catch (err) {}
   } catch (err) {
