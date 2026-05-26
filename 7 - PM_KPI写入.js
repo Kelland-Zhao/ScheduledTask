@@ -73,6 +73,8 @@ function writePMKPI(e) {
       if (excluded[wc]) continue;
       const ym  = String(r[10] || "").trim();  // K: YearMonth
       if (!ym) continue;
+      const prodStatus = String(r[12] || "").trim(); // M: 生产状态
+      if (prodStatus !== "生产") continue;
       const sub  = String(r[11] || "").trim(); // L: SubProcess
       const perf = String(r[13] || "").trim(); // N: 绩效状态
 
