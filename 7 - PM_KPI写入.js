@@ -1,10 +1,10 @@
-// V20260526.2 — PM KPI 数据写入（仅写 A:D 列，E:J 由 ArrayFormula 自动计算）
+// V20260526.3 — PM KPI 数据写入（按 A/B 匹配后写入 C/D，E:J 为 ArrayFormula）
 
 const PM_SOURCE_SS_ID = "1C7z16Ww22dfGxeqKRrBw27J-zmXXStAt2xoEYwL-V24";
 const PM_DEST_SS_ID   = "1KYRwzlYZz9OK8NPAkndhc9MxGlLEILYsRbsMkSvcV_U";
 const PM_KPI_SHEET    = "3.PM_KPI";
 
-/** 从 Master Data 计算并追加 PM KPI 数据到 3.PM_KPI（幂等，仅写 A:D） */
+/** 从 Master Data 计算后，按 3.PM_KPI A/B 列匹配将结果写入 C/D 列（跳过已有值的行） */
 function writePMKPI(e) {
   const trigger = e ? "定时" : "手动";
   try {
@@ -27,19 +27,21 @@ function writePMKPI(e) {
       tfTypeMap[String(tfRows[i][0]).trim()] = String(tfRows[i][2]).trim();
     }
 
-    // 3. 已存在的 Month+Process（幂等去重）；扫描 A:B 列定位最后数据行
-    //    注：E:J 为 ArrayFormula，不能用 getLastRow() 定位，需扫描原始数据列
-    const kpiSheet = destSS.getSheetByName(PM_KPI_SHEET);
-    const abVals   = kpiSheet.getRange("A:B").getValues();
-    const existing = {};
-    let lastDataRow = 3; // 默认：header 在第3行，数据从第4行开始
-    for (let i = 3; i < abVals.length; i++) { // 从第4行(index=3)开始，跳过 header
-      const a = String(abVals[i][0] || "").trim();
-      const b = String(abVals[i][1] || "").trim();
-      if (a && b) {
-        existing[a + "_" + b] = true;
-        lastDataRow = i + 1; // 转为 1-indexed 行号
-      }
+    // 3. 读取 3.PM_KPI A:D，找到 A/B 有值但 C 为空的待写入行
+    //    pendingRows["YYYYMM_Process"] = 1-indexed 行号
+    const kpiSheet  = destSS.getSheetByName(PM_KPI_SHEET);
+    const abcdVals  = kpiSheet.getRange("A:D").getValues();
+    const pendingRows = {};
+    for (let i = 0; i < abcdVals.length; i++) {
+      const a = String(abcdVals[i][0] || "").trim();
+      const b = String(abcdVals[i][1] || "").trim();
+      const c = abcdVals[i][2];
+      if (a && b && !c) pendingRows[a + "_" + b] = i + 1; // 1-indexed
+    }
+
+    if (Object.keys(pendingRows).length === 0) {
+      try { writeLog("writePMKPI", "跳过", "无待写入行（C列均已有值）", trigger, ""); } catch (err) {}
+      return;
     }
 
     // 4. SubProcess → Process 映射
@@ -60,7 +62,6 @@ function writePMKPI(e) {
     }
 
     // 5. 遍历 Master Data，按 (YearMonth, Process) 分组统计
-    //    groups[ym][proc] = { total, valid }
     const masterRows = srcSS.getSheetByName("Master Data").getDataRange().getValues();
     const groups = {};
 
@@ -78,7 +79,6 @@ function writePMKPI(e) {
       const proc = mapProcess(sub, key, wc);
       if (!proc) continue;
 
-      // 子工序同时累加到 TF 汇总行
       const targets = [proc];
       if (proc === "AFT" || proc === "HSL+BOU" || proc === "ZAH" || proc === "_TF_OTHER") {
         targets.push("TF");
@@ -92,28 +92,23 @@ function writePMKPI(e) {
       });
     }
 
-    // 6. 构造待写入行（仅 A:D，跳过已存在的 Month+Process）
-    const ORDER = ["IM", "AFT", "HSL+BOU", "ZAH", "TF", "PK"];
-    const newRows = [];
-
-    Object.keys(groups).sort().forEach(function(ym) {
-      ORDER.forEach(function(proc) {
-        const g = groups[ym][proc];
-        if (!g) return;
-        if (existing[ym + "_" + proc]) return;
-        newRows.push([Number(ym), proc, g.total, g.valid]);
-      });
+    // 6. 按匹配行号写入 C/D（YearMonth 固定6位，_后为 Process）
+    let writeCount = 0;
+    Object.keys(pendingRows).forEach(function(k) {
+      const ym   = k.substring(0, 6);
+      const proc = k.substring(7);
+      const g = groups[ym] && groups[ym][proc];
+      if (!g) return;
+      kpiSheet.getRange(pendingRows[k], 3, 1, 2).setValues([[g.total, g.valid]]);
+      writeCount++;
     });
 
-    if (newRows.length === 0) {
-      try { writeLog("writePMKPI", "跳过", "无新数据需要写入", trigger, ""); } catch (err) {}
+    if (writeCount === 0) {
+      try { writeLog("writePMKPI", "跳过", "Master Data 中无对应数据", trigger, ""); } catch (err) {}
       return;
     }
 
-    // 7. 追加写入 A:D 列（E:J 由 ArrayFormula 自动填充）
-    kpiSheet.getRange(lastDataRow + 1, 1, newRows.length, 4).setValues(newRows);
-
-    try { writeLog("writePMKPI", "成功", "写入 " + newRows.length + " 行到 " + PM_KPI_SHEET, trigger, ""); } catch (err) {}
+    try { writeLog("writePMKPI", "成功", "写入 " + writeCount + " 行到 " + PM_KPI_SHEET, trigger, ""); } catch (err) {}
   } catch (err) {
     try { writeLog("writePMKPI", "失败", err.message, trigger, err.stack || ""); } catch (e) {}
     console.error(err.stack || err.message);
