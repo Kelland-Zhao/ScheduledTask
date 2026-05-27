@@ -78,6 +78,64 @@ function mainFaultDetection() {
   }
 }
 
+// ========== 诊断函数 ==========
+
+/** 诊断：输出每条故障的筛选细节到 Log，帮助排查收不到邮件的原因 */
+function debugFaultDetection() {
+  var items = getAllFaultItems();
+  if (items.length === 0) {
+    writeLog('debugFaultDetection', '诊断', 'getAllFaultItems 返回 0 条记录', '手动', '检查6个车间表是否有数据、表头是否匹配');
+    return;
+  }
+
+  var report = [];
+  items.forEach(function(item) {
+    var reasons = [];
+    var passed = true;
+
+    if (!(item.processType in FAULT_CONFIG.PROCESS_THRESHOLDS)) {
+      reasons.push('工序不支持: ' + item.processType);
+      passed = false;
+    }
+
+    var threshold = FAULT_CONFIG.PROCESS_THRESHOLDS[item.processType] || 0;
+    var repairTime = Number(item.repairTime) || 0;
+    if (passed && repairTime < threshold) {
+      reasons.push('维修时间不足: ' + repairTime + 'min(阈值' + threshold + 'min)');
+      passed = false;
+    }
+
+    if (passed && item.needFaultReport !== '' && item.needFaultReport != null) {
+      reasons.push('已填写故障报告: "' + item.needFaultReport + '"');
+      passed = false;
+    }
+
+    if (passed && item.status !== '已解决' && item.status !== 'Solved') {
+      reasons.push('状态未解决: "' + item.status + '"');
+      passed = false;
+    }
+
+    report.push((passed ? '✓' : '✗') + ' 编号:' + item.id +
+      ' | 工序:' + item.processType +
+      ' | 维修时间:' + repairTime + 'min' +
+      ' | 故障报告:' + (item.needFaultReport || '(空)') +
+      ' | 状态:' + item.status +
+      ' | 车间:' + item.workshop +
+      (reasons.length > 0 ? ' | 原因: ' + reasons.join('; ') : ''));
+  });
+
+  writeLog('debugFaultDetection', '诊断', '共' + items.length + '条\n' + report.join('\n'), '手动', '');
+
+  // 同时输出通知配置
+  var configs = getNotificationConfig();
+  if (configs.length === 0) {
+    writeLog('debugFaultDetection', '诊断', '通知配置为空，检查通知清单 Function=故障报告分配', '手动', '');
+  } else {
+    var cfgInfo = configs.map(function(c) { return c.process + ' → ' + c.mail; }).join(' | ');
+    writeLog('debugFaultDetection', '诊断', '通知配置: ' + cfgInfo, '手动', '');
+  }
+}
+
 // ========== 数据读取 ==========
 
 function getAllFaultItems() {
