@@ -1,4 +1,4 @@
-// V20260527.1 — 保养反馈同步模块
+// V20260528.1 — 保养反馈同步模块（性能优化版）
 // 功能：从 MasterData 表读取「后续措施 - 保养（反馈）」数据，同步写入各工序车间表
 
 // ========== 保养反馈同步配置 ==========
@@ -12,7 +12,9 @@ const FEEDBACK_CONFIG = {
     'INJ': ['Shift_INJ_TB1', 'Shift_INJ_TB2'],
     'TF': ['Shift_TF_TB1', 'Shift_TF_TB2'],
     'PK': ['Shift_PK_TB1', 'Shift_PK_TB2']
-  }
+  },
+
+  ADMIN_EMAIL: 'kelland_zhao@colpal.com'
 };
 
 /** 同步保养反馈数据：从 MasterData 读取反馈值，匹配编号写入各工序车间表 */
@@ -25,7 +27,7 @@ function syncMaintenanceFeedbackData() {
   try {
     console.log('开始同步保养反馈数据...');
 
-    // 1. 打开源表 MasterData
+    // 1. 读取 MasterData
     const masterSS = SpreadsheetApp.openById(FEEDBACK_CONFIG.MASTER_SHEET_ID);
     const masterSheet = masterSS.getSheetByName(FEEDBACK_CONFIG.MASTER_SHEET_NAME);
     if (!masterSheet) throw new Error('找不到源数据表: ' + FEEDBACK_CONFIG.MASTER_SHEET_NAME);
@@ -41,71 +43,81 @@ function syncMaintenanceFeedbackData() {
       throw new Error('MasterData 表缺少必要的列：工序、编号或后续措施 - 保养（反馈）');
     }
 
-    // 2. 打开目标表
+    // 2. 预读所有目标车间表，建立 编号→行号 索引（只读一次）
     const targetSS = SpreadsheetApp.openById(FEEDBACK_CONFIG.TARGET_SHEET_ID);
+    const sheetCache = {};
 
-    // 3. 遍历 MasterData 每一行
-    for (let i = 1; i < masterData.length; i++) {
-      const row = masterData[i];
-      const processType = row[processCol];
-      const itemId = row[idCol];
-      const feedbackValue = row[feedbackCol];
+    for (var processKey in FEEDBACK_CONFIG.PROCESS_SHEET_MAPPING) {
+      var sheetNames = FEEDBACK_CONFIG.PROCESS_SHEET_MAPPING[processKey];
+      for (var s = 0; s < sheetNames.length; s++) {
+        var sheetName = sheetNames[s];
+        var sheet = targetSS.getSheetByName(sheetName);
+        if (!sheet) continue;
 
-      if (!processType || !itemId) {
-        console.log('跳过第 ' + (i + 1) + ' 行：工序或编号为空');
-        skipCount++;
-        continue;
-      }
+        var data = sheet.getDataRange().getValues();
+        var headers = data[0];
+        var targetIdCol = headers.indexOf('编号');
+        var targetFeedbackCol = headers.indexOf('后续措施 - 保养（反馈）');
 
-      const targetSheets = FEEDBACK_CONFIG.PROCESS_SHEET_MAPPING[processType];
-      if (!targetSheets) {
-        console.log('跳过第 ' + (i + 1) + ' 行：不支持的工序类型 ' + processType);
-        skipCount++;
-        continue;
-      }
+        if (targetIdCol === -1 || targetFeedbackCol === -1) continue;
 
-      let updated = false;
-
-      for (let s = 0; s < targetSheets.length; s++) {
-        const sheetName = targetSheets[s];
-        const targetSheet = targetSS.getSheetByName(sheetName);
-        if (!targetSheet) {
-          console.log('警告：找不到目标表 ' + sheetName);
-          continue;
+        // 建立 编号→行号 映射（0-based row index）
+        var lookup = {};
+        for (var j = 1; j < data.length; j++) {
+          var id = String(data[j][targetIdCol] || '').trim();
+          if (id) lookup[id] = j;
         }
 
-        const targetData = targetSheet.getDataRange().getValues();
-        const targetHeaders = targetData[0];
-
-        const targetIdCol = targetHeaders.indexOf('编号');
-        const targetFeedbackCol = targetHeaders.indexOf('后续措施 - 保养（反馈）');
-
-        if (targetIdCol === -1 || targetFeedbackCol === -1) {
-          console.log('警告：表 ' + sheetName + ' 缺少必要的列');
-          continue;
-        }
-
-        for (let j = 1; j < targetData.length; j++) {
-          if (targetData[j][targetIdCol] === itemId) {
-            targetSheet.getRange(j + 1, targetFeedbackCol + 1).setValue(feedbackValue);
-            console.log('成功更新 ' + sheetName + ' 中编号 ' + itemId);
-            updateCount++;
-            updated = true;
-            break;
-          }
-        }
-
-        if (updated) break;
-      }
-
-      if (!updated) {
-        console.log('未找到编号 ' + itemId + ' (工序: ' + processType + ')');
-        notFoundCount++;
+        sheetCache[sheetName] = {
+          sheet: sheet,
+          lookup: lookup,
+          feedbackCol: targetFeedbackCol
+        };
       }
     }
 
+    console.log('已缓存 ' + Object.keys(sheetCache).length + ' 个车间表的索引');
+
+    // 3. 遍历 MasterData，通过索引快速匹配
+    var numRows = masterData.length;
+    for (var i = 1; i < numRows; i++) {
+      var row = masterData[i];
+      var processType = String(row[processCol] || '').trim();
+      var itemId = String(row[idCol] || '').trim();
+      var feedbackValue = row[feedbackCol];
+
+      if (!processType || !itemId) {
+        skipCount++;
+        continue;
+      }
+
+      var targetSheets = FEEDBACK_CONFIG.PROCESS_SHEET_MAPPING[processType];
+      if (!targetSheets) {
+        skipCount++;
+        continue;
+      }
+
+      var found = false;
+      for (var t = 0; t < targetSheets.length; t++) {
+        var tgtSheetName = targetSheets[t];
+        var cache = sheetCache[tgtSheetName];
+        if (!cache) continue;
+
+        var rowIdx = cache.lookup[itemId];
+        if (rowIdx !== undefined) {
+          // 写入（使用索引定位，直接写单元格）
+          cache.sheet.getRange(rowIdx + 1, cache.feedbackCol + 1).setValue(feedbackValue);
+          updateCount++;
+          found = true;
+          break;
+        }
+      }
+
+      if (!found) notFoundCount++;
+    }
+
     console.log('同步完成：成功更新 ' + updateCount + ' 条，未找到 ' + notFoundCount + ' 条');
-    writeLog(fnName, '成功', '更新: ' + updateCount + ' | 未找到: ' + notFoundCount + ' | 跳过: ' + skipCount + ' | 总处理: ' + (masterData.length - 1),
+    writeLog(fnName, '成功', '更新: ' + updateCount + ' | 未找到: ' + notFoundCount + ' | 跳过: ' + skipCount + ' | 总处理: ' + (numRows - 1),
       '定时', '');
 
     return { success: true, updateCount: updateCount, notFoundCount: notFoundCount, skipCount: skipCount };
@@ -115,10 +127,9 @@ function syncMaintenanceFeedbackData() {
     writeLog(fnName, '失败', error.message, '定时', error.stack || '');
 
     try {
-      GmailApp.sendEmail(FAULT_CONFIG.ADMIN_EMAIL,
+      GmailApp.sendEmail(FEEDBACK_CONFIG.ADMIN_EMAIL,
         '[系统错误] 保养反馈同步',
-        '保养反馈同步出错:\n\n错误: ' + error.message + '\n时间: ' + Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd HH:mm:ss'),
-        { from: getFaultEmailSender() }
+        '保养反馈同步出错:\n\n错误: ' + error.message + '\n时间: ' + Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd HH:mm:ss')
       );
     } catch (mailError) {
       console.error('发送错误通知时出错:', mailError);
