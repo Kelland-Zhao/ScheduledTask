@@ -31,7 +31,6 @@ const FAULT_CONFIG = {
   },
 
   EMAIL_SUBJECT_PREFIX: '[故障报告提醒]',
-  DETECTION_INTERVAL: 15,
   ADMIN_EMAIL: 'kelland_zhao@colpal.com'
 };
 
@@ -76,31 +75,6 @@ function mainFaultDetection() {
     console.error('故障检测流程出错:', error);
     writeLog(fnName, '失败', error.message, '定时', error.stack || '');
     sendErrorNotification(error);
-  }
-}
-
-// ========== 触发器安装 ==========
-
-/** 安装故障检测定时触发器（每 15 分钟），建议每日通过定时设置调用一次以确保触发器存活 */
-function setupFaultDetectionTrigger() {
-  try {
-    const triggers = ScriptApp.getProjectTriggers();
-    triggers.forEach(function(t) {
-      if (t.getHandlerFunction() === 'mainFaultDetection') {
-        ScriptApp.deleteTrigger(t);
-      }
-    });
-
-    ScriptApp.newTrigger('mainFaultDetection')
-      .timeBased()
-      .everyMinutes(FAULT_CONFIG.DETECTION_INTERVAL)
-      .create();
-
-    writeLog('setupFaultDetectionTrigger', '成功', '已安装每' + FAULT_CONFIG.DETECTION_INTERVAL + '分钟触发器', '定时', '');
-  } catch (error) {
-    console.error('设置定时触发器时出错:', error);
-    writeLog('setupFaultDetectionTrigger', '失败', error.message, '定时', error.stack || '');
-    throw error;
   }
 }
 
