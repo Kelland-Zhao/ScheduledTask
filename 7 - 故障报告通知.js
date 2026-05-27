@@ -299,8 +299,12 @@ function sendFaultNotifications(faultItems, notificationConfig) {
 
     Object.keys(groupedItems).forEach(function(processType) {
       var items = groupedItems[processType];
-      // 按维修时间降序排列，时间长的优先展示
-      items.sort(function(a, b) { return (Number(b.repairTime) || 0) - (Number(a.repairTime) || 0); });
+      // 按提交日期降序排列，最近提交的优先展示
+      items.sort(function(a, b) {
+        var da = a.submitDate ? new Date(a.submitDate) : new Date(0);
+        var db = b.submitDate ? new Date(b.submitDate) : new Date(0);
+        return db - da;
+      });
       var recipients = getRecipients(processType, notificationConfig);
 
       if (recipients.length > 0) {
@@ -422,7 +426,7 @@ function generateEmailBody(processType, faultItems) {
 
   if (omittedCount > 0) {
     html += '<div style="background:#FFF3CD;border:1px solid #FFC107;border-radius:8px;padding:15px;margin-bottom:20px;text-align:center">';
-    html += '<strong>共 ' + totalCount + ' 条，以下展示最近 ' + maxShow + ' 条</strong>，还有 ' + omittedCount + ' 条请前往<a href="https://docs.google.com/spreadsheets/d/' + FAULT_CONFIG.SHEET_ID + '/edit" target="_blank">交接班模块表格</a>查看完整清单';
+    html += '<strong>共 ' + totalCount + ' 条，以下展示最近 ' + maxShow + ' 条</strong>，还有 ' + omittedCount + ' 条请前往<a href="https://script.google.com/macros/s/AKfycbyaQjG5yFGYxU825DrODhSLl2bdfbYKpqAH4qOIzKoTJ4b-5qU/exec?v=FailureReport_Manage" target="_blank">故障报告管理模块</a>查看完整清单';
     html += '</div>';
   }
 
