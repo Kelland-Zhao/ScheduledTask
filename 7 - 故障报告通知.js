@@ -35,11 +35,6 @@ const FAULT_CONFIG = {
   MAX_ITEMS_IN_EMAIL: 20
 };
 
-// ========== 邮件发件人（运行时获取，避免顶层 OAuth 报错）==========
-function getFaultEmailSender() {
-  return Session.getActiveUser().getEmail();
-}
-
 // ========== 故障检测主函数 ==========
 
 /** 主函数：故障检测和通知发送（由 15 分钟定时触发器调用） */
@@ -352,17 +347,15 @@ function sendProcessEmail(processType, faultItems, recipients) {
   try {
     var subject = generateEmailSubject(processType, faultItems);
     var body = generateEmailBody(processType, faultItems);
-    var sender = getFaultEmailSender();
 
     recipients.forEach(function(recipient) {
       try {
-        GmailApp.sendEmail(recipient, subject, '', {
-          htmlBody: body,
-          from: sender
-        });
+        GmailApp.sendEmail(recipient, subject, '', { htmlBody: body });
         console.log('成功发送邮件给: ' + recipient);
+        writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，' + faultItems.length + ' 个故障条目', '定时', processType);
       } catch (emailError) {
         console.error('发送邮件给 ' + recipient + ' 时出错:', emailError);
+        writeLog('sendProcessEmail', '失败', '发送至 ' + recipient + ' 失败: ' + emailError.message, '定时', processType);
       }
     });
 
@@ -370,6 +363,7 @@ function sendProcessEmail(processType, faultItems, recipients) {
 
   } catch (error) {
     console.error('发送工序 ' + processType + ' 通知时出错:', error);
+    writeLog('sendProcessEmail', '失败', processType + ': ' + error.message, '定时', error.stack || '');
     return false;
   }
 }
@@ -474,9 +468,7 @@ function sendErrorNotification(error) {
     var subject = '[系统错误] 故障报告邮件通知系统';
     var body = '故障报告邮件通知系统运行出错:\n\n错误信息: ' + error.message + '\n时间: ' + Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd HH:mm:ss') + '\n\n请检查系统日志。';
 
-    GmailApp.sendEmail(FAULT_CONFIG.ADMIN_EMAIL, subject, body, {
-      from: getFaultEmailSender()
-    });
+    GmailApp.sendEmail(FAULT_CONFIG.ADMIN_EMAIL, subject, body);
 
     writeLog('sendErrorNotification', '成功', '已发送错误通知至 ' + FAULT_CONFIG.ADMIN_EMAIL, '定时', error.message);
 
@@ -509,7 +501,7 @@ function testFaultEmailSending() {
     function: '故障报告分配',
     process: 'IM',
     workshop: 'TB1',
-    mail: getFaultEmailSender()
+    mail: FAULT_CONFIG.ADMIN_EMAIL
   }];
 
   var sentCount = sendFaultNotifications(testItems, testConfig);
