@@ -31,7 +31,8 @@ const FAULT_CONFIG = {
   },
 
   EMAIL_SUBJECT_PREFIX: '[故障报告提醒]',
-  ADMIN_EMAIL: 'kelland_zhao@colpal.com'
+  ADMIN_EMAIL: 'kelland_zhao@colpal.com',
+  MAX_ITEMS_IN_EMAIL: 20
 };
 
 // ========== 邮件发件人（运行时获取，避免顶层 OAuth 报错）==========
@@ -303,6 +304,8 @@ function sendFaultNotifications(faultItems, notificationConfig) {
 
     Object.keys(groupedItems).forEach(function(processType) {
       var items = groupedItems[processType];
+      // 按维修时间降序排列，时间长的优先展示
+      items.sort(function(a, b) { return (Number(b.repairTime) || 0) - (Number(a.repairTime) || 0); });
       var recipients = getRecipients(processType, notificationConfig);
 
       if (recipients.length > 0) {
@@ -395,6 +398,10 @@ function getProcessDisplayNameEn(processType) {
 
 function generateEmailBody(processType, faultItems) {
   var processName = getProcessDisplayName(processType);
+  var totalCount = faultItems.length;
+  var maxShow = FAULT_CONFIG.MAX_ITEMS_IN_EMAIL;
+  var displayItems = faultItems.slice(0, maxShow);
+  var omittedCount = totalCount - maxShow;
 
   var html = '<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>故障报告提醒</title><style>';
   html += 'body{font-family:\'Microsoft YaHei\',Arial,sans-serif;margin:0;padding:20px;background-color:#f5f5f5}';
@@ -416,8 +423,14 @@ function generateEmailBody(processType, faultItems) {
 
   html += '<div class="header">';
   html += '<h1>【故障报告提醒】Fault Report Reminder</h1>';
-  html += '<p>' + processName + '工序发现需要判定是否需要故障报告<br>' + getProcessDisplayNameEn(processType) + ' process found issues that need to determine whether fault reports are required</p>';
+  html += '<p>' + processName + '工序发现' + totalCount + '个需要判定是否需要故障报告的问题<br>' + getProcessDisplayNameEn(processType) + ' process found ' + totalCount + ' issues</p>';
   html += '</div>';
+
+  if (omittedCount > 0) {
+    html += '<div style="background:#FFF3CD;border:1px solid #FFC107;border-radius:8px;padding:15px;margin-bottom:20px;text-align:center">';
+    html += '<strong>共 ' + totalCount + ' 条，以下展示最近 ' + maxShow + ' 条</strong>，还有 ' + omittedCount + ' 条请前往<a href="https://docs.google.com/spreadsheets/d/' + FAULT_CONFIG.SHEET_ID + '/edit" target="_blank">交接班模块表格</a>查看完整清单';
+    html += '</div>';
+  }
 
   html += '<div class="table-container">';
   html += '<h2 style="margin-top:0;color:#333">【故障详情列表】Fault Details List</h2>';
@@ -425,7 +438,7 @@ function generateEmailBody(processType, faultItems) {
   html += '<th>序号<br>No.</th><th>故障编号<br>Fault ID</th><th>机台号<br>Machine No.</th><th>车间<br>Workshop</th><th>维修人<br>Repair Person</th><th>问题描述<br>Problem Description</th><th>处理过程<br>Process</th><th>维修时间<br>Repair Time</th><th>提交日期<br>Submit Date</th><th>状态<br>Status</th>';
   html += '</tr></thead><tbody>';
 
-  faultItems.forEach(function(item, idx) {
+  displayItems.forEach(function(item, idx) {
     html += '<tr>';
     html += '<td><strong>#' + (idx + 1) + '</strong></td>';
     html += '<td>' + (item.id || '-') + '</td>';
@@ -441,6 +454,11 @@ function generateEmailBody(processType, faultItems) {
   });
 
   html += '</tbody></table></div>';
+
+  if (omittedCount > 0) {
+    html += '<p style="text-align:center;color:#E60012;font-weight:bold">（共 ' + totalCount + ' 条，以上为前 ' + maxShow + ' 条，剩余 ' + omittedCount + ' 条未展示）</p>';
+  }
+
   html += '<div class="footer">';
   html += '<p>此邮件由EDS故障报告邮件通知系统自动发送<br>This email is automatically sent by EDS Fault Report Email Notification System</p>';
   html += '<p>请及时处理相关故障报告，确保设备正常运行<br>Please process the relevant fault reports promptly to ensure normal equipment operation</p>';
