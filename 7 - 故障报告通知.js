@@ -176,7 +176,8 @@ function filterQualifiedFaultItems(faultItems) {
 
       if (item.needFaultReport !== '' && item.needFaultReport != null) return false;
 
-      if (item.status === '已解决' || item.status === 'Solved') return false;
+      // 只提醒已解决的条目（修完了才需要判定是否写故障报告）
+      if (item.status !== '已解决' && item.status !== 'Solved') return false;
 
       return true;
     } catch (error) {
