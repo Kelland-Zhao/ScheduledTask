@@ -29,7 +29,8 @@ function writeKaizenKPI(e) {
     for (let i = 1; i < kaizenRows.length; i++) {
       const r         = kaizenRows[i];
       const excellent = String(r[0]  || "").trim();
-      const month     = String(r[2]  || "").trim();
+      const monthRaw  = String(r[2]  || "").trim();
+      const month     = monthRaw.length === 6 ? monthRaw.slice(0, 4) + "-" + monthRaw.slice(4) : monthRaw;
       const dept      = String(r[9]  || "").trim();
       const process   = String(r[11] || "").trim();
       const empId     = String(r[14] || "").trim();
