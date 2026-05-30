@@ -1,4 +1,4 @@
-// V20260530.01 — Kaizen KPI 数据写入（清空后按 EQU 部门+保养组人员 分组写入）
+// V20260530.03 — Kaizen KPI 数据写入（upsert：已有行更新 C/D，新组合追加，保留历史）
 
 const KAIZEN_SOURCE_SS_ID = "1R0O_GfCQyQWXJ6ZR5AfE1xgCOuPrMP3FFOZ6u3I9rLg";
 const KAIZEN_DEST_SS_ID   = "1eeG8wA9YbCZfNv6qndDKa3vs7VKs2MT2fFG12Tk-At4";
@@ -6,7 +6,7 @@ const KAIZEN_SOURCE_SHEET = "Kaizen_Year";
 const KAIZEN_DEST_SHEET   = "Master_Data";
 const KAIZEN_STAFF_SHEET  = "保养组人员名单";
 
-/** 读取 Kaizen_Year，过滤 EQU+保养组人员，按月份+工序分组统计后清空重写 Master_Data */
+/** 读取 Kaizen_Year，过滤 EQU+保养组人员，按月份+工序分组统计后 upsert 到 Master_Data */
 function writeKaizenKPI(e) {
   const trigger = e ? "定时" : "手动";
   try {
@@ -44,26 +44,42 @@ function writeKaizenKPI(e) {
       if (excellent === "优秀") groups[key].excellent++;
     }
 
-    // 3. 清空 Master_Data 数据区（保留表头第1行），重新写入
-    const destSheet = destSS.getSheetByName(KAIZEN_DEST_SHEET);
-    const lastRow = destSheet.getLastRow();
-    if (lastRow > 1) {
-      destSheet.getRange(2, 1, lastRow - 1, 5).clearContent();
-    }
-
-    const keys = Object.keys(groups).sort();
-    if (keys.length === 0) {
+    if (Object.keys(groups).length === 0) {
       try { writeLog("writeKaizenKPI", "跳过", "无符合条件的数据", trigger, ""); } catch (err) {}
       return;
     }
 
-    const output = keys.map(function(k) {
-      const g = groups[k];
-      return [g.month, g.process, g.total, g.excellent, ""];
-    });
-    destSheet.getRange(2, 1, output.length, 5).setValues(output);
+    // 3. 读取 Master_Data 现有行，建立 "月份_工序" → 1-indexed 行号 map
+    const destSheet = destSS.getSheetByName(KAIZEN_DEST_SHEET);
+    const existingVals = destSheet.getRange("A:B").getValues();
+    const existingMap = {};
+    for (let i = 1; i < existingVals.length; i++) {
+      const a = String(existingVals[i][0] || "").trim();
+      const b = String(existingVals[i][1] || "").trim();
+      if (a && b) existingMap[a + "_" + b] = i + 1; // 1-indexed
+    }
 
-    try { writeLog("writeKaizenKPI", "成功", "写入 " + output.length + " 行到 " + KAIZEN_DEST_SHEET, trigger, ""); } catch (err) {}
+    // 4. Upsert：已有行更新 C/D，新组合追加整行
+    let updateCount = 0;
+    let appendCount = 0;
+    const appendRows = [];
+
+    Object.keys(groups).forEach(function(k) {
+      const g = groups[k];
+      if (existingMap[k]) {
+        destSheet.getRange(existingMap[k], 3, 1, 2).setValues([[g.total, g.excellent]]);
+        updateCount++;
+      } else {
+        appendRows.push([g.month, g.process, g.total, g.excellent, ""]);
+        appendCount++;
+      }
+    });
+
+    if (appendRows.length > 0) {
+      destSheet.getRange(destSheet.getLastRow() + 1, 1, appendRows.length, 5).setValues(appendRows);
+    }
+
+    try { writeLog("writeKaizenKPI", "成功", "更新 " + updateCount + " 行，追加 " + appendCount + " 行到 " + KAIZEN_DEST_SHEET, trigger, ""); } catch (err) {}
   } catch (err) {
     try { writeLog("writeKaizenKPI", "失败", err.message, trigger, err.stack || ""); } catch (e) {}
     console.error(err.stack || err.message);
