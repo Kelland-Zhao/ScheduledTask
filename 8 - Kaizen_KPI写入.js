@@ -18,7 +18,7 @@ function writeKaizenKPI(e) {
     const staffSet = {};
     for (let i = 1; i < staffRows.length; i++) {
       const id = String(staffRows[i][0] || "").trim();
-      if (id) staffSet[id] = true;
+      if (id.length >= 5) staffSet[id.slice(-5)] = true;
     }
 
     // 2. 读取 Kaizen_Year，过滤并分组统计
