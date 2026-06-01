@@ -19,7 +19,7 @@ const INSPECTION_CONFIG = {
 
 // ========== 定时触发入口 ==========
 function runWeeklyInspection() {
-  _weeklyInspectionMain("定时触发");
+  _weeklyInspectionMain("定时");
 }
 
 // ========== 手动触发入口 ==========
