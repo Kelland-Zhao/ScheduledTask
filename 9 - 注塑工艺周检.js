@@ -22,6 +22,11 @@ function runWeeklyInspection() {
   _weeklyInspectionMain("定时触发");
 }
 
+// ========== 手动触发入口 ==========
+function runWeeklyInspectionManual() {
+  _weeklyInspectionMain("手动");
+}
+
 // ========== 主流程 ==========
 function _weeklyInspectionMain(trigger) {
   try {
