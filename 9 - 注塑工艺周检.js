@@ -19,11 +19,11 @@ const INSPECTION_CONFIG = {
 
 // ========== 定时触发入口 ==========
 function runWeeklyInspection() {
-  _weeklyInspectionMain();
+  _weeklyInspectionMain("定时触发");
 }
 
 // ========== 主流程 ==========
-function _weeklyInspectionMain() {
+function _weeklyInspectionMain(trigger) {
   try {
     console.log("开始执行注塑工艺周检查2.0...");
 
@@ -98,8 +98,10 @@ function _weeklyInspectionMain() {
 
     _wiWriteMasterData(backfilledFinalData);
     console.log("注塑工艺周检查2.0执行完成！");
+    try { writeLog("runWeeklyInspection", "成功", `周次 ${currentWeek}，写入 ${backfilledFinalData.length} 条记录`, trigger, ""); } catch (err) {}
   } catch (error) {
     console.error("执行过程中发生错误:", error);
+    try { writeLog("runWeeklyInspection", "失败", error.message, trigger, error.stack || ""); } catch (err) {}
     throw error;
   }
 }
