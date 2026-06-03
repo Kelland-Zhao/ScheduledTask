@@ -72,6 +72,7 @@ function _cf_getPendingRows() {
 
     if (!sapNo && !name) return;   // 空行
     if (!coach) return;            // 无主管信息，无法提醒
+    if (month < '202604') return;  // 202604 之前数据豁免
     if (submitted !== '') return;  // 非空 = 已提交或豁免（Y / 退休 / 考勤工伤...）
 
     rows.push({ sapNo: sapNo, name: name, month: month, coach: coach, process: process });
