@@ -22,10 +22,11 @@ function sendCoachingReminder(e) {
       return;
     }
 
-    // 按工序分组
+    // 按工序分组（从 userID O列取 coach 的工序）
     const byProcess = {};
     pending.forEach(function(r) {
-      const proc = r.process || '未知';
+      const info = userMap[_cf_normalizeName(r.coach)];
+      const proc = (info && info.process) ? info.process : '未知';
       if (!byProcess[proc]) byProcess[proc] = [];
       byProcess[proc].push(r);
     });
@@ -98,7 +99,7 @@ function _cf_buildUserMap() {
     const supervisorEmail = String(row[CF_USERID_SUPERVISOR_COL] || '').trim().toLowerCase();
     const key = _cf_normalizeName(rawName);
     if (key && !map[key]) {
-      map[key] = { email: email, supervisorEmail: supervisorEmail };
+      map[key] = { email: email, supervisorEmail: supervisorEmail, process: String(row[14] || '').trim() };
     }
   });
 
