@@ -1,7 +1,7 @@
-// V20260604.02 — Workcenter 数据同步（从 Line Database → Workcenter，Equipment_Number_EAM 字典匹配）
+// V20260604.03 — Workcenter 数据同步（从 Line Database → Workcenter，Equipment_Number_EAM 字典匹配）
 // 入口：syncWorkcenterData（每日 08:20 定时 or 手动）
 // 逻辑：读取 Line Database，过滤有效 Individual Machine，通过 Equipment_Number_EAM 的 K列匹配设备编号，
-//       智能转换 Final Machine Type，判断主设备标识，取 New Formed Cell 机组号，全量写入 Workcenter 的 A-G 列
+//       智能转换 Final Machine Type，判断主设备标识，全量写入 Workcenter 的 A-F 列 + K列（New Formed Cell）
 
 // ========== 数据源配置 ==========
 const _ws_ID_PLAN = "11zyH65MhC-LuqsEXT6KeO3-GQ3jwW7z7kJjHD0TwLZc";
@@ -58,8 +58,11 @@ function syncWorkcenterData(e) {
     });
     console.log("过滤后有效记录: " + objArrayNoNull.length + " 行");
 
-    // 4. 构建包含七个字段的同步数据
-    const syncData = objArrayNoNull.map(function (item) {
+    // 4. 构建 A-F 同步数据 + K列 New Formed Cell
+    const syncData = [];       // A-F 六列
+    const newFormedCellCol = []; // K列
+
+    objArrayNoNull.forEach(function (item) {
       // D列 Final Machine Type：机器性能不为空则用机器性能，否则用 Machine Type
       let finalMachineType = "";
       if (item["机器性能"] && item["机器性能"].toString().trim() !== "") {
@@ -81,15 +84,15 @@ function syncWorkcenterData(e) {
         equipmentNumber = equipmentNumberMap[workcenterValue];
       }
 
-      // G列 New Formed Cell：机组号，来自 Line Database E列
-      const newFormedCell = item["New Formed Cell"] || "";
+      syncData.push([item["Individual Machine"], item["Machine Type"], item["机器性能"], finalMachineType, isMainEquipment, equipmentNumber]);
 
-      return [item["Individual Machine"], item["Machine Type"], item["机器性能"], finalMachineType, isMainEquipment, equipmentNumber, newFormedCell];
+      // K列 New Formed Cell：机组号，来自 Line Database E列
+      newFormedCellCol.push([item["New Formed Cell"] || ""]);
     });
 
     // 5. 执行数据同步
     console.log("开始同步数据到 Workcenter 表格...");
-    const resultDataWritten = _ws_dataWritten(_ws_ID_EQU, _ws_SHEET_EQU, syncData);
+    const resultDataWritten = _ws_dataWritten(_ws_ID_EQU, _ws_SHEET_EQU, syncData, newFormedCellCol);
 
     if (resultDataWritten === true) {
       console.log("✅ 数据同步成功完成！共同步 " + syncData.length + " 条记录");
@@ -126,15 +129,18 @@ function _ws_getObjArray(data) {
 }
 
 // ========== 写入 Workcenter ==========
-function _ws_clearSheetContent(ss, sheetName) {
+function _ws_clearSheetContent(ss, sheetName, rowCount) {
   try {
-    console.log("正在清空 " + sheetName + " 表格 A-G 列内容...");
+    console.log("正在清空 " + sheetName + " 表格 A-F 列及 K列内容...");
     const ws = ss.getSheetByName(sheetName);
     const lastRow = ws.getLastRow();
 
     if (lastRow > 1) {
-      ws.getRange(2, 1, lastRow - 1, 7).clearContent();
-      console.log("✅ 成功清空 A-G 列 " + (lastRow - 1) + " 行数据");
+      // 清空 A-F 列
+      ws.getRange(2, 1, lastRow - 1, 6).clearContent();
+      // 清空 K列
+      ws.getRange(2, 11, lastRow - 1, 1).clearContent();
+      console.log("✅ 成功清空 A-F 列及 K列 " + (lastRow - 1) + " 行数据");
     } else {
       console.log("表格只有表头，无需清空");
     }
@@ -145,34 +151,39 @@ function _ws_clearSheetContent(ss, sheetName) {
   }
 }
 
-function _ws_dataWritten(id, sheetName, data) {
+function _ws_dataWritten(id, sheetName, syncData, newFormedCellCol) {
   try {
     console.log("正在打开目标表格: " + sheetName);
     const ss = SpreadsheetApp.openById(id);
     const ws = ss.getSheetByName(sheetName);
 
     // 1. 清空表格内容（保留表头）
-    const clearResult = _ws_clearSheetContent(ss, sheetName);
+    const clearResult = _ws_clearSheetContent(ss, sheetName, syncData.length);
     if (!clearResult) {
       return "清空表格失败";
     }
 
     // 2. 校验数据
-    const validationResult = _ws_validateData(data);
+    const validationResult = _ws_validateData(syncData);
     if (validationResult !== true) {
       return validationResult;
     }
 
-    // 3. 从第二行开始写入数据
-    console.log("正在写入 " + data.length + " 行数据...");
-    if (data.length > 0) {
-      ws.getRange(2, 1, data.length, data[0].length).setValues(data);
-      console.log("✅ 数据写入成功");
-      return true;
-    } else {
-      console.log("⚠️ 没有数据需要写入");
-      return true;
+    // 3. 写入 A-F 列
+    console.log("正在写入 " + syncData.length + " 行数据到 A-F 列...");
+    if (syncData.length > 0) {
+      ws.getRange(2, 1, syncData.length, 6).setValues(syncData);
+      console.log("✅ A-F 列数据写入成功");
     }
+
+    // 4. 写入 K列 New Formed Cell
+    if (newFormedCellCol.length > 0) {
+      ws.getRange(2, 11, newFormedCellCol.length, 1).setValues(newFormedCellCol);
+      console.log("✅ K列 New Formed Cell 写入成功");
+    }
+
+    console.log("✅ 数据写入完成");
+    return true;
 
   } catch (e) {
     console.log("❌ 数据写入失败: " + e.toString());
@@ -187,8 +198,8 @@ function _ws_validateData(data) {
   }
 
   for (let i = 0; i < data.length; i++) {
-    if (!Array.isArray(data[i]) || data[i].length !== 7) {
-      return "第 " + (i + 1) + " 行数据格式不正确，期望7个字段，实际" + data[i].length + "个字段";
+    if (!Array.isArray(data[i]) || data[i].length !== 6) {
+      return "第 " + (i + 1) + " 行数据格式不正确，期望6个字段，实际" + data[i].length + "个字段";
     }
   }
 
