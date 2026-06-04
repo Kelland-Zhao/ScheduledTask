@@ -33,8 +33,7 @@ function writeKaizenKPI(e) {
     for (let i = 1; i < kaizenRows.length; i++) {
       const r         = kaizenRows[i];
       const excellent = String(r[0]  || "").trim();
-      const monthRaw  = String(r[2]  || "").trim();
-      const month     = monthRaw.length === 6 ? monthRaw.slice(0, 4) + "-" + monthRaw.slice(4) : monthRaw;
+      const month     = _kz_normalizeMonth(r[2]);
       const dept      = String(r[9]  || "").trim();
       const empId     = String(r[14] || "").trim();
 
@@ -60,7 +59,7 @@ function writeKaizenKPI(e) {
     const existingVals = destSheet.getRange(1, 1, destLastRow, 6).getValues();
     const existingMap = {};
     for (let i = 1; i < existingVals.length; i++) {
-      const a = String(existingVals[i][0] || "").trim();
+      const a = _kz_normalizeMonth(existingVals[i][0]);
       const b = String(existingVals[i][1] || "").trim();
       const f = String(existingVals[i][5] || "").trim();
       if (a && b) existingMap[a + "_" + b + "_" + f] = i + 1;
@@ -92,4 +91,16 @@ function writeKaizenKPI(e) {
     try { writeLog("writeKaizenKPI", "失败", err.message, trigger, err.stack || ""); } catch (e) {}
     console.error(err.stack || err.message);
   }
+}
+
+/** 月份值标准化为 yyyy-MM，兼容 Date 对象（Google Sheets 日期自动转换） */
+function _kz_normalizeMonth(val) {
+  if (!val) return "";
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, Session.getScriptTimeZone(), "yyyy-MM");
+  }
+  const s = String(val).trim();
+  // "202604" → "2026-04"
+  if (/^\d{6}$/.test(s)) return s.slice(0, 4) + "-" + s.slice(4);
+  return s;
 }
