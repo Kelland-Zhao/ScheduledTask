@@ -2,7 +2,7 @@
 // 入口：checkPointCheckMachines（每日 08:25 定时 or 手动）
 // 逻辑：比对 MachineList(工序=INJ) 与 Workcenter(C列≠闲置) 的机台差异，
 //       差异1（点检有/计划账无）→ MachineList 标黄 + 邮件，
-//       差异2（计划账有/点检无）→ 仅邮件
+//       差异2（计划账有/点检无）→ 仅邮件，机型=6AX 豁免
 
 // ========== 数据源配置 ==========
 const _pc_ID_POINTCHECK = "1RQql-PrcBWiAQNeg7hQKcocpllSUMRhT5XPrDTVWoBY";
@@ -95,6 +95,8 @@ function checkPointCheckMachines(e) {
 
     wcSet.forEach(function (wc) {
       if (!injMachineNos.has(wc)) {
+        // 豁免：机型=6AX 的机台不纳入差异类型2
+        if (wcMap[wc].machineModel === "6AX") return;
         type2.push({ workcenter: wc, info: wcMap[wc] });
       }
     });
