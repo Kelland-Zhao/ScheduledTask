@@ -17,9 +17,10 @@ const FEEDBACK_CONFIG = {
   ADMIN_EMAIL: 'kelland_zhao@colpal.com'
 };
 
-/** 同步保养反馈数据：从 MasterData 读取反馈值，匹配编号写入各工序车间表 */
-function syncMaintenanceFeedbackData() {
+/** 同步保养反馈数据：从 MasterData 读取反馈值，匹配编号写入各工序车间表（定时 e 存在 / 手动 e 为 undefined） */
+function syncMaintenanceFeedbackData(e) {
   const fnName = 'syncMaintenanceFeedbackData';
+  const trigger = e ? '定时' : '手动';
   let updateCount = 0;
   let notFoundCount = 0;
   let skipCount = 0;
@@ -118,13 +119,13 @@ function syncMaintenanceFeedbackData() {
 
     console.log('同步完成：成功更新 ' + updateCount + ' 条，未找到 ' + notFoundCount + ' 条');
     writeLog(fnName, '成功', '更新: ' + updateCount + ' | 未找到: ' + notFoundCount + ' | 跳过: ' + skipCount + ' | 总处理: ' + (numRows - 1),
-      '定时', '');
+      trigger, '');
 
     return { success: true, updateCount: updateCount, notFoundCount: notFoundCount, skipCount: skipCount };
 
   } catch (error) {
     console.error('同步保养反馈数据时出错:', error);
-    writeLog(fnName, '失败', error.message, '定时', error.stack || '');
+    writeLog(fnName, '失败', error.message, trigger, error.stack || '');
 
     try {
       GmailApp.sendEmail(FEEDBACK_CONFIG.ADMIN_EMAIL,

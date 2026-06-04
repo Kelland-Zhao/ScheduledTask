@@ -37,9 +37,10 @@ const FAULT_CONFIG = {
 
 // ========== 故障检测主函数 ==========
 
-/** 主函数：故障检测和通知发送（由 15 分钟定时触发器调用） */
-function mainFaultDetection() {
+/** 主函数：故障检测和通知发送（定时 e 存在 / 手动 e 为 undefined） */
+function mainFaultDetection(e) {
   const fnName = 'mainFaultDetection';
+  const trigger = e ? '定时' : '手动';
   try {
     console.log('开始故障检测流程...');
 
@@ -47,7 +48,7 @@ function mainFaultDetection() {
     console.log('获取到 ' + faultItems.length + ' 个故障条目');
 
     if (faultItems.length === 0) {
-      writeLog(fnName, '成功', '无故障条目', '定时', '');
+      writeLog(fnName, '成功', '无故障条目', trigger, '');
       return;
     }
 
@@ -55,22 +56,22 @@ function mainFaultDetection() {
     console.log('筛选出 ' + qualifiedItems.length + ' 个符合通知条件的故障条目');
 
     if (qualifiedItems.length === 0) {
-      writeLog(fnName, '成功', '无符合通知条件的条目（共扫描 ' + faultItems.length + ' 条）', '定时', '');
+      writeLog(fnName, '成功', '无符合通知条件的条目（共扫描 ' + faultItems.length + ' 条）', trigger, '');
       return;
     }
 
     const notificationConfig = getNotificationConfig();
     console.log('获取到 ' + notificationConfig.length + ' 条通知配置');
 
-    const sentCount = sendFaultNotifications(qualifiedItems, notificationConfig);
+    const sentCount = sendFaultNotifications(qualifiedItems, notificationConfig, trigger);
     console.log('成功发送 ' + sentCount + ' 封通知邮件');
 
-    writeLog(fnName, '成功', '发送 ' + sentCount + ' 封通知，覆盖 ' + qualifiedItems.length + ' 个故障条目', '定时', '');
+    writeLog(fnName, '成功', '发送 ' + sentCount + ' 封通知，覆盖 ' + qualifiedItems.length + ' 个故障条目', trigger, '');
 
   } catch (error) {
     console.error('故障检测流程出错:', error);
-    writeLog(fnName, '失败', error.message, '定时', error.stack || '');
-    sendErrorNotification(error);
+    writeLog(fnName, '失败', error.message, trigger, error.stack || '');
+    sendErrorNotification(error, trigger);
   }
 }
 
@@ -227,7 +228,7 @@ function getNotificationConfig() {
 
 // ========== 邮件发送 ==========
 
-function sendFaultNotifications(faultItems, notificationConfig) {
+function sendFaultNotifications(faultItems, notificationConfig, trigger) {
   var sentCount = 0;
 
   try {
@@ -249,7 +250,7 @@ function sendFaultNotifications(faultItems, notificationConfig) {
       var recipients = getRecipients(processType, notificationConfig);
 
       if (recipients.length > 0) {
-        var success = sendProcessEmail(processType, items, recipients);
+        var success = sendProcessEmail(processType, items, recipients, trigger);
         if (success) sentCount++;
       }
     });
@@ -288,7 +289,7 @@ function getRecipients(processType, notificationConfig) {
   });
 }
 
-function sendProcessEmail(processType, faultItems, recipients) {
+function sendProcessEmail(processType, faultItems, recipients, trigger) {
   try {
     var subject = generateEmailSubject(processType, faultItems);
     var body = generateEmailBody(processType, faultItems);
@@ -297,10 +298,10 @@ function sendProcessEmail(processType, faultItems, recipients) {
       try {
         GmailApp.sendEmail(recipient, subject, '', { htmlBody: body });
         console.log('成功发送邮件给: ' + recipient);
-        writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，' + faultItems.length + ' 个故障条目', '定时', processType);
+        writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，' + faultItems.length + ' 个故障条目', trigger, processType);
       } catch (emailError) {
         console.error('发送邮件给 ' + recipient + ' 时出错:', emailError);
-        writeLog('sendProcessEmail', '失败', '发送至 ' + recipient + ' 失败: ' + emailError.message, '定时', processType);
+        writeLog('sendProcessEmail', '失败', '发送至 ' + recipient + ' 失败: ' + emailError.message, trigger, processType);
       }
     });
 
@@ -308,7 +309,7 @@ function sendProcessEmail(processType, faultItems, recipients) {
 
   } catch (error) {
     console.error('发送工序 ' + processType + ' 通知时出错:', error);
-    writeLog('sendProcessEmail', '失败', processType + ': ' + error.message, '定时', error.stack || '');
+    writeLog('sendProcessEmail', '失败', processType + ': ' + error.message, trigger, error.stack || '');
     return false;
   }
 }
@@ -408,14 +409,14 @@ function generateEmailBody(processType, faultItems) {
 
 // ========== 错误通知 ==========
 
-function sendErrorNotification(error) {
+function sendErrorNotification(error, trigger) {
   try {
     var subject = '[系统错误] 故障报告邮件通知系统';
     var body = '故障报告邮件通知系统运行出错:\n\n错误信息: ' + error.message + '\n时间: ' + Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd HH:mm:ss') + '\n\n请检查系统日志。';
 
     GmailApp.sendEmail(FAULT_CONFIG.ADMIN_EMAIL, subject, body);
 
-    writeLog('sendErrorNotification', '成功', '已发送错误通知至 ' + FAULT_CONFIG.ADMIN_EMAIL, '定时', error.message);
+    writeLog('sendErrorNotification', '成功', '已发送错误通知至 ' + FAULT_CONFIG.ADMIN_EMAIL, trigger, error.message);
 
   } catch (emailError) {
     console.error('发送错误通知时出错:', emailError);
