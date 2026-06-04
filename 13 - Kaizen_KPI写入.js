@@ -56,7 +56,8 @@ function writeKaizenKPI(e) {
 
     // 3. 读取 Master_Data 现有行，建立 "月份_Process_Sub_Process"(A_B_F) → 1-indexed 行号 map
     const destSheet = destSS.getSheetByName(KAIZEN_DEST_SHEET);
-    const existingVals = destSheet.getRange("A:F").getValues();
+    const destLastRow = Math.max(destSheet.getLastRow(), 1);
+    const existingVals = destSheet.getRange(1, 1, destLastRow, 6).getValues();
     const existingMap = {};
     for (let i = 1; i < existingVals.length; i++) {
       const a = String(existingVals[i][0] || "").trim();
@@ -65,7 +66,7 @@ function writeKaizenKPI(e) {
       if (a && b) existingMap[a + "_" + b + "_" + f] = i + 1;
     }
 
-    // 4. Upsert：已有行更新 C/D，新组合追加整行
+    // 4. Upsert：已有行更新 C/D/E，新组合追加整行
     let updateCount = 0;
     let appendCount = 0;
     const appendRows = [];
@@ -82,7 +83,8 @@ function writeKaizenKPI(e) {
     });
 
     if (appendRows.length > 0) {
-      destSheet.getRange(destSheet.getLastRow() + 1, 1, appendRows.length, 6).setValues(appendRows);
+      const appendStartRow = destSheet.getLastRow() + 1;
+      destSheet.getRange(appendStartRow, 1, appendRows.length, 6).setValues(appendRows);
     }
 
     try { writeLog("writeKaizenKPI", "成功", "更新 " + updateCount + " 行，追加 " + appendCount + " 行到 " + KAIZEN_DEST_SHEET, trigger, ""); } catch (err) {}
