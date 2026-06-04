@@ -1,7 +1,7 @@
-// V20260604.01 — Workcenter 数据同步（从 Line Database → Workcenter，Equipment_Number_EAM 字典匹配）
+// V20260604.02 — Workcenter 数据同步（从 Line Database → Workcenter，Equipment_Number_EAM 字典匹配）
 // 入口：syncWorkcenterData（每日 08:20 定时 or 手动）
 // 逻辑：读取 Line Database，过滤有效 Individual Machine，通过 Equipment_Number_EAM 的 K列匹配设备编号，
-//       智能转换 Final Machine Type，判断主设备标识，全量写入 Workcenter 的 A-F 列
+//       智能转换 Final Machine Type，判断主设备标识，取 New Formed Cell 机组号，全量写入 Workcenter 的 A-G 列
 
 // ========== 数据源配置 ==========
 const _ws_ID_PLAN = "11zyH65MhC-LuqsEXT6KeO3-GQ3jwW7z7kJjHD0TwLZc";
@@ -58,7 +58,7 @@ function syncWorkcenterData(e) {
     });
     console.log("过滤后有效记录: " + objArrayNoNull.length + " 行");
 
-    // 4. 构建包含六个字段的同步数据
+    // 4. 构建包含七个字段的同步数据
     const syncData = objArrayNoNull.map(function (item) {
       // D列 Final Machine Type：机器性能不为空则用机器性能，否则用 Machine Type
       let finalMachineType = "";
@@ -81,7 +81,10 @@ function syncWorkcenterData(e) {
         equipmentNumber = equipmentNumberMap[workcenterValue];
       }
 
-      return [item["Individual Machine"], item["Machine Type"], item["机器性能"], finalMachineType, isMainEquipment, equipmentNumber];
+      // G列 New Formed Cell：机组号，来自 Line Database E列
+      const newFormedCell = item["New Formed Cell"] || "";
+
+      return [item["Individual Machine"], item["Machine Type"], item["机器性能"], finalMachineType, isMainEquipment, equipmentNumber, newFormedCell];
     });
 
     // 5. 执行数据同步
@@ -125,13 +128,13 @@ function _ws_getObjArray(data) {
 // ========== 写入 Workcenter ==========
 function _ws_clearSheetContent(ss, sheetName) {
   try {
-    console.log("正在清空 " + sheetName + " 表格 A-F 列内容...");
+    console.log("正在清空 " + sheetName + " 表格 A-G 列内容...");
     const ws = ss.getSheetByName(sheetName);
     const lastRow = ws.getLastRow();
 
     if (lastRow > 1) {
-      ws.getRange(2, 1, lastRow - 1, 6).clearContent();
-      console.log("✅ 成功清空 A-F 列 " + (lastRow - 1) + " 行数据");
+      ws.getRange(2, 1, lastRow - 1, 7).clearContent();
+      console.log("✅ 成功清空 A-G 列 " + (lastRow - 1) + " 行数据");
     } else {
       console.log("表格只有表头，无需清空");
     }
@@ -184,8 +187,8 @@ function _ws_validateData(data) {
   }
 
   for (let i = 0; i < data.length; i++) {
-    if (!Array.isArray(data[i]) || data[i].length !== 6) {
-      return "第 " + (i + 1) + " 行数据格式不正确，期望6个字段，实际" + data[i].length + "个字段";
+    if (!Array.isArray(data[i]) || data[i].length !== 7) {
+      return "第 " + (i + 1) + " 行数据格式不正确，期望7个字段，实际" + data[i].length + "个字段";
     }
   }
 
