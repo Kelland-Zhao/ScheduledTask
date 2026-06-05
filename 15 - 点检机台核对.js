@@ -75,7 +75,7 @@ function checkPointCheckMachines(e) {
       if (wc) {
         wcMap[wc] = {
           machineType: String(dataWC[i][1] || "").trim(),       // B列 Machine Type
-          machineModel: String(dataWC[i][2] || "").trim(),       // C列 机器性能
+          machineModel: String(dataWC[i][3] || "").trim(),       // D列 Final Machine Type
         };
       }
     }
@@ -244,7 +244,7 @@ function _pc_buildEmailHtml(type1, type2, today) {
     html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:32px">差异类型2：计划账有 / 点检无 (' + type2.length + '台)</h3>';
     html += '<p style="color:#e74c3c;font-weight:bold;margin-bottom:8px">⚠ 这些机台在计划账上，但在点检机台主数据中缺失，需要更新点检机台主数据</p>';
 
-    var t2Headers = ["Workcenter", "Machine Type", "机型"];
+    var t2Headers = ["Workcenter", "Machine Type", "Final Machine Type"];
     var t2Rows = type2.map(function (r) {
       return [r.workcenter, r.info.machineType || "-", r.info.machineModel || "-"];
     });
