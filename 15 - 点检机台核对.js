@@ -75,7 +75,7 @@ function checkPointCheckMachines(e) {
       if (wc) {
         wcMap[wc] = {
           machineType: String(dataWC[i][1] || "").trim(),       // B列 Machine Type
-          machineModel: String(dataWC[i][6] || "").trim(),       // G列 机型
+          machineModel: String(dataWC[i][2] || "").trim(),       // C列 机器性能
         };
       }
     }
