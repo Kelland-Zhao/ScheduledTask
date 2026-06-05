@@ -87,14 +87,18 @@ function checkPointCheckMachines(e) {
     const type1 = [];  // 点检有/计划账无
     const type2 = [];  // 计划账有/点检无
 
+    const exemptType1Process = ["Plasma"];
     injRows.forEach(function (r) {
       if (r.machineNo && !wcSet.has(r.machineNo)) {
+        if (exemptType1Process.includes(String(r.rowData[2] || "").trim())) return; // 机型豁免
         type1.push(r);
       }
     });
 
+    const exemptType2WC = ["V2FTA164", "V2FTA264", "V2FTA364"];
     wcSet.forEach(function (wc) {
       if (!injMachineNos.has(wc)) {
+        if (exemptType2WC.includes(wc)) return;                               // 指定机台豁免
         // 豁免：Final Machine Type 为 6AX / DP / HS 的机台不纳入差异类型2
         const exempt = ["6AX", "DP", "HS"];
         if (exempt.includes(wcMap[wc].machineModel)) return;
