@@ -2,7 +2,7 @@
 // 入口：checkPointCheckMachines（每日 08:25 定时 or 手动）
 // 逻辑：比对 MachineList(工序=INJ) 与 Workcenter(C列≠闲置) 的机台差异，
 //       差异1（点检有/计划账无）→ MachineList 标黄 + 邮件，
-//       差异2（计划账有/点检无）→ 仅邮件，机型=6AX 豁免
+//       差异2（计划账有/点检无）→ 仅邮件，Final Machine Type=6AX/DP/HS 豁免
 
 // ========== 数据源配置 ==========
 const _pc_ID_POINTCHECK = "1RQql-PrcBWiAQNeg7hQKcocpllSUMRhT5XPrDTVWoBY";
@@ -75,7 +75,7 @@ function checkPointCheckMachines(e) {
       if (wc) {
         wcMap[wc] = {
           machineType: String(dataWC[i][1] || "").trim(),       // B列 Machine Type
-          machineModel: String(dataWC[i][6] || "").trim(),       // G列 机型
+          machineModel: String(dataWC[i][3] || "").trim(),       // D列 Final Machine Type
         };
       }
     }
@@ -87,16 +87,21 @@ function checkPointCheckMachines(e) {
     const type1 = [];  // 点检有/计划账无
     const type2 = [];  // 计划账有/点检无
 
+    const exemptType1Process = ["Plasma"];
     injRows.forEach(function (r) {
       if (r.machineNo && !wcSet.has(r.machineNo)) {
+        if (exemptType1Process.includes(String(r.rowData[2] || "").trim())) return; // 机型豁免
         type1.push(r);
       }
     });
 
+    const exemptType2WC = ["V2FTA164", "V2FTA264", "V2FTA364"];
     wcSet.forEach(function (wc) {
       if (!injMachineNos.has(wc)) {
-        // 豁免：机型=6AX 的机台不纳入差异类型2
-        if (wcMap[wc].machineModel === "6AX") return;
+        if (exemptType2WC.includes(wc)) return;                               // 指定机台豁免
+        // 豁免：Final Machine Type 为 6AX / DP / HS 的机台不纳入差异类型2
+        const exempt = ["6AX", "DP", "HS"];
+        if (exempt.includes(wcMap[wc].machineModel)) return;
         type2.push({ workcenter: wc, info: wcMap[wc] });
       }
     });
@@ -244,7 +249,7 @@ function _pc_buildEmailHtml(type1, type2, today) {
     html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:32px">差异类型2：计划账有 / 点检无 (' + type2.length + '台)</h3>';
     html += '<p style="color:#e74c3c;font-weight:bold;margin-bottom:8px">⚠ 这些机台在计划账上，但在点检机台主数据中缺失，需要更新点检机台主数据</p>';
 
-    var t2Headers = ["Workcenter", "Machine Type", "机型"];
+    var t2Headers = ["Workcenter", "Machine Type", "Final Machine Type"];
     var t2Rows = type2.map(function (r) {
       return [r.workcenter, r.info.machineType || "-", r.info.machineModel || "-"];
     });
