@@ -76,7 +76,7 @@ function sendQualityTourIssues(e) {
           problem: String(row[3] || "").trim(),
           priority: String(row[4] || "").trim(),
           action: String(row[5] || "").trim(),
-          dueDate: String(row[6] || "").trim(),
+          dueDate: row[6] instanceof Date ? formatVariableAsDate(row[6]) : String(row[6] || "").trim(),
           owner: String(row[7] || "").trim(),
           status: status || "未填写"
         });
