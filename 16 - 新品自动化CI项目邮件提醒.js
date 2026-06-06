@@ -91,7 +91,9 @@ function milestoneReminder() {
     var projectName = String(row[0] || "").trim();
     var leaderStr = String(row[1] || "").trim();
     var status = String(row[3] || "").trim();             // D列：状态
+    var projectType = String(row[5] || "").trim();        // F列：类型
     if (!projectName || status !== "Ongoing") return;
+    if (projectType !== "新品/新自动化" && projectType !== "CI") return;
 
     var toEmail = extractEmail(leaderStr).toLowerCase();
     var leaderName = extractName(leaderStr);
@@ -151,12 +153,13 @@ function milestoneReminder() {
         ownerEmail: ownerEmail
       };
 
-      // 按 Leader 邮箱分组（用于合并邮件）
-      var groupKey = toEmail || "no-leader";
+      // 按 Leader + 类型分组（新品和CI分开邮件）
+      var groupKey = (toEmail || "no-leader") + "|" + projectType;
       if (!leaderMap[groupKey]) {
         leaderMap[groupKey] = {
           leaderName: leaderName,
           leaderEmail: toEmail,
+          projectType: projectType,
           overdue: [],
           upcoming: [],
           ownerEmails: {}
@@ -201,49 +204,53 @@ function extractName(str) {
 }
 
 /**
- * 发送邮件
- * @param {Object} entry - { leaderName, leaderEmail, overdue[], upcoming[], ownerEmails{} }
+ * 发送邮件（按项目类型区分 TO/CC 规则）
+ * @param {Object} entry - { leaderName, leaderEmail, projectType, overdue[], upcoming[], ownerEmails{} }
  */
 function sendMilestoneEmail(entry, todayStr, userLookup) {
   var leaderEmail = entry.leaderEmail;
   var ownerEmails = Object.keys(entry.ownerEmails);
   var overdueItems = entry.overdue;
   var upcomingItems = entry.upcoming;
+  var isNewProduct = entry.projectType === "新品/新自动化";
 
-  // 构建 TO 列表：新品自动化项目管理员 + 各事项责任人
   var toList = [];
-  userLookup.newProductAdminEmails.forEach(function(e) {
-    if (toList.indexOf(e) === -1) toList.push(e);
-  });
-  ownerEmails.forEach(function(e) {
-    if (toList.indexOf(e) === -1) toList.push(e);
-  });
-  if (toList.length === 0) return;
-
-  // 构建 CC 列表：Leader + Leader上级 + INJ工序管理员 + kelland
   var ccList = [];
 
-  // Leader
-  if (leaderEmail && ccList.indexOf(leaderEmail) === -1 && toList.indexOf(leaderEmail) === -1) {
-    ccList.push(leaderEmail);
+  if (isNewProduct) {
+    // 新品/新自动化：管理员 TO，Leader CC
+    userLookup.newProductAdminEmails.forEach(function(e) {
+      if (toList.indexOf(e) === -1) toList.push(e);
+    });
+    ownerEmails.forEach(function(e) {
+      if (toList.indexOf(e) === -1) toList.push(e);
+    });
+    // CC: Leader + 上级 + INJ管理员 + kelland
+    if (leaderEmail && ccList.indexOf(leaderEmail) === -1 && toList.indexOf(leaderEmail) === -1) {
+      ccList.push(leaderEmail);
+    }
+  } else {
+    // CI：Leader TO，无新品管理员
+    if (leaderEmail) toList.push(leaderEmail);
+    ownerEmails.forEach(function(e) {
+      if (toList.indexOf(e) === -1) toList.push(e);
+    });
   }
 
-  // Leader 上级（BI列）
+  if (toList.length === 0) return;
+
+  // 公共 CC：Leader上级 + INJ工序管理员 + kelland
   if (leaderEmail) {
     var supervisorEmail = userLookup.supervisorMap[leaderEmail];
     if (supervisorEmail && ccList.indexOf(supervisorEmail) === -1 && toList.indexOf(supervisorEmail) === -1) {
       ccList.push(supervisorEmail);
     }
   }
-
-  // INJ 工序管理员（BH列="INJ工序管理员"）
   userLookup.injAdminEmails.forEach(function(e) {
     if (ccList.indexOf(e) === -1 && toList.indexOf(e) === -1) {
       ccList.push(e);
     }
   });
-
-  // 保留 Kelland 在 CC
   var kellandEmail = "kelland_zhao@colpal.com";
   if (ccList.indexOf(kellandEmail) === -1 && toList.indexOf(kellandEmail) === -1) {
     ccList.push(kellandEmail);
