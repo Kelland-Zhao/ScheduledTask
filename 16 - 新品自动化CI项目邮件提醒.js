@@ -10,17 +10,20 @@ const UID_BH_COL = 59;          // BH列：项目跟进权限管理（管理员�
 const UID_BI_COL = 60;          // BI列：直线上级邮箱
 
 /**
- * 从 userID 表读取 Leader 上级映射 + INJ 工序管理员列表
- * 返回 { supervisorMap: {email→supervisorEmail}, injAdminEmails: string[] }
+ * 从 userID 表读取：
+ * - supervisorMap: Leader邮箱 → 上级邮箱（BI列）
+ * - injAdminEmails: INJ工序管理员（O列=INJ 且 BH列="INJ工序管理员"）
+ * - newProductAdminEmails: 新品自动化项目管理员（BH列="新品自动化项目管理员"）
  */
 function _ms_buildUserLookup() {
   var sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
   var lastRow = sheet.getLastRow();
-  var result = { supervisorMap: {}, injAdminEmails: [] };
+  var result = { supervisorMap: {}, injAdminEmails: [], newProductAdminEmails: [] };
   if (lastRow < 3) return result;
 
   var data = sheet.getRange(3, 1, lastRow - 2, 61).getValues(); // A~BI 共61列
   var injAdminSet = {};
+  var newProductAdminSet = {};
 
   data.forEach(function(row) {
     var email = String(row[UID_GMail_COL] || "").trim().toLowerCase();
@@ -29,12 +32,15 @@ function _ms_buildUserLookup() {
     if (supervisorEmail) {
       result.supervisorMap[email] = supervisorEmail;
     }
-    // INJ工序管理员：O列=INJ 且 BH列有标记
-    var process = String(row[UID_PROCESS_COL] || "").trim();
+    // BH列角色值
     var bhVal = String(row[UID_BH_COL] || "").trim();
-    if (process === "INJ" && bhVal && !injAdminSet[email]) {
+    if (bhVal === "INJ工序管理员" && !injAdminSet[email]) {
       injAdminSet[email] = true;
       result.injAdminEmails.push(email);
+    }
+    if (bhVal === "新品自动化项目管理员" && !newProductAdminSet[email]) {
+      newProductAdminSet[email] = true;
+      result.newProductAdminEmails.push(email);
     }
   });
 
@@ -199,31 +205,38 @@ function extractName(str) {
  * @param {Object} entry - { leaderName, leaderEmail, overdue[], upcoming[], ownerEmails{} }
  */
 function sendMilestoneEmail(entry, todayStr, userLookup) {
-  var toEmail = entry.leaderEmail;
+  var leaderEmail = entry.leaderEmail;
   var ownerEmails = Object.keys(entry.ownerEmails);
   var overdueItems = entry.overdue;
   var upcomingItems = entry.upcoming;
 
-  // 构建 TO 列表：Leader + 各事项责任人
+  // 构建 TO 列表：新品自动化项目管理员 + 各事项责任人
   var toList = [];
-  if (toEmail) toList.push(toEmail);
+  userLookup.newProductAdminEmails.forEach(function(e) {
+    if (toList.indexOf(e) === -1) toList.push(e);
+  });
   ownerEmails.forEach(function(e) {
     if (toList.indexOf(e) === -1) toList.push(e);
   });
   if (toList.length === 0) return;
 
-  // 构建 CC 列表
+  // 构建 CC 列表：Leader + Leader上级 + INJ工序管理员 + kelland
   var ccList = [];
 
+  // Leader
+  if (leaderEmail && ccList.indexOf(leaderEmail) === -1 && toList.indexOf(leaderEmail) === -1) {
+    ccList.push(leaderEmail);
+  }
+
   // Leader 上级（BI列）
-  if (toEmail) {
-    var supervisorEmail = userLookup.supervisorMap[toEmail.toLowerCase()];
-    if (supervisorEmail && ccList.indexOf(supervisorEmail) === -1) {
+  if (leaderEmail) {
+    var supervisorEmail = userLookup.supervisorMap[leaderEmail];
+    if (supervisorEmail && ccList.indexOf(supervisorEmail) === -1 && toList.indexOf(supervisorEmail) === -1) {
       ccList.push(supervisorEmail);
     }
   }
 
-  // INJ 工序管理员（O列=INJ 且 BH列有标记）
+  // INJ 工序管理员（BH列="INJ工序管理员"）
   userLookup.injAdminEmails.forEach(function(e) {
     if (ccList.indexOf(e) === -1 && toList.indexOf(e) === -1) {
       ccList.push(e);
