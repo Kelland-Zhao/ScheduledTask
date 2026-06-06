@@ -1,109 +1,181 @@
-// V20260606.2 — Milestone邮件提醒（适配 JSON 格式项目总表）
+// V20260606.3 — Milestone邮件提醒（自定义milestone + userID查上级/管理员）
 
 const PROJECT_TRACKING_SPREADSHEET_ID = "1aoQDjeWU9Xa9clloyTwiXL6WS62tYVbB0-VOavpAgAM";
 const PROJECT_SHEET_NAME = "项目总表";
 
-// Milestone 显示名 → JSON name 模糊匹配关键词
-const MS_KEYWORDS = [
-  ["模具/自动化改造", "模具"],
-  ["FAT", "FAT"],
-  ["现场安装", "现场安装"],
-  ["IQ/OQ", "IQ/OQ"],
-  ["工程测试", "工程测试"],
-  ["PQ", "PQ"],
-  ["Mass Production", "Mass Production"]
-];
+// userID 列索引（0-based）
+const UID_GMail_COL = 9;        // J列：人员邮箱
+const UID_PROCESS_COL = 14;     // O列：工序
+const UID_BH_COL = 59;          // BH列：项目跟进权限管理（管理员标记）
+const UID_BI_COL = 60;          // BI列：直线上级邮箱
+
+/**
+ * 从 userID 表读取 Leader 上级映射 + INJ 工序管理员列表
+ * 返回 { supervisorMap: {email→supervisorEmail}, injAdminEmails: string[] }
+ */
+function _ms_buildUserLookup() {
+  var sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
+  var lastRow = sheet.getLastRow();
+  var result = { supervisorMap: {}, injAdminEmails: [] };
+  if (lastRow < 3) return result;
+
+  var data = sheet.getRange(3, 1, lastRow - 2, 61).getValues(); // A~BI 共61列
+  var injAdminSet = {};
+
+  data.forEach(function(row) {
+    var email = String(row[UID_GMail_COL] || "").trim().toLowerCase();
+    if (!email) return;
+    var supervisorEmail = String(row[UID_BI_COL] || "").trim().toLowerCase();
+    if (supervisorEmail) {
+      result.supervisorMap[email] = supervisorEmail;
+    }
+    // INJ工序管理员：O列=INJ 且 BH列有标记
+    var process = String(row[UID_PROCESS_COL] || "").trim();
+    var bhVal = String(row[UID_BH_COL] || "").trim();
+    if (process === "INJ" && bhVal && !injAdminSet[email]) {
+      injAdminSet[email] = true;
+      result.injAdminEmails.push(email);
+    }
+  });
+
+  return result;
+}
+
+/** 从 JSON name 提取中文显示名（取 / 前部分） */
+function _ms_extractDisplayName(fullName) {
+  if (!fullName) return "";
+  var idx = fullName.indexOf("/");
+  if (idx > -1) {
+    return fullName.substring(0, idx).trim();
+  }
+  return fullName.trim();
+}
 
 function milestoneReminder() {
-  const projectSpreadsheet = SpreadsheetApp.openById(PROJECT_TRACKING_SPREADSHEET_ID);
-  const projectSheet = projectSpreadsheet.getSheetByName(PROJECT_SHEET_NAME);
-  const logSheet = saas.getSheetByName("Log");
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const todayStr = Utilities.formatDate(today, currentTimeZone, "yyyy-MM-dd");
+  var projectSpreadsheet = SpreadsheetApp.openById(PROJECT_TRACKING_SPREADSHEET_ID);
+  var projectSheet = projectSpreadsheet.getSheetByName(PROJECT_SHEET_NAME);
+  var logSheet = saas.getSheetByName("Log");
 
   // 读取已发送记录（去重）
-  const existingKeys = new Set();
-  const logLr = logSheet.getLastRow();
+  var today = new Date();
+  today.setHours(0, 0, 0, 0);
+  var todayStr = Utilities.formatDate(today, currentTimeZone, "yyyy-MM-dd");
+
+  var existingKeys = new Set();
+  var logLr = logSheet.getLastRow();
   if (logLr > 1) {
-    logSheet.getRange(2, 4, logLr - 1, 1).getValues().forEach(r => { if (r[0]) existingKeys.add(r[0]); });
+    logSheet.getRange(2, 4, logLr - 1, 1).getValues().forEach(function(r) { if (r[0]) existingKeys.add(r[0]); });
   }
 
-  const lastRow = projectSheet.getLastRow();
+  var lastRow = projectSheet.getLastRow();
   if (lastRow <= 1) {
     logSummary(logSheet, 0);
     return;
   }
 
-  // 新格式：A-I 共 9 列
-  const data = projectSheet.getRange(2, 1, lastRow - 1, 9).getValues();
-  const leaderMap = {};
-  const newLogRows = [];
+  // 预加载 userID 查找表
+  var userLookup = _ms_buildUserLookup();
 
-  data.forEach(row => {
-    const projectName = String(row[0] || "").trim();
-    const leaderStr = String(row[1] || "").trim();
-    const status = String(row[3] || "").trim();             // D列：状态
+  // 新格式：A-I 共 9 列
+  var data = projectSheet.getRange(2, 1, lastRow - 1, 9).getValues();
+  var leaderMap = {};
+  var newLogRows = [];
+
+  data.forEach(function(row) {
+    var projectName = String(row[0] || "").trim();
+    var leaderStr = String(row[1] || "").trim();
+    var status = String(row[3] || "").trim();             // D列：状态
     if (!projectName || status !== "Ongoing") return;
 
-    const toEmail = extractEmail(leaderStr);
-    const leaderName = extractName(leaderStr);
+    var toEmail = extractEmail(leaderStr);
+    var leaderName = extractName(leaderStr);
 
     // 解析 E列 Milestones_JSON
-    const msJsonRaw = row[4];
-    let milestones = [];
+    var msJsonRaw = row[4];
+    var milestones = [];
     if (msJsonRaw) {
       try {
         milestones = JSON.parse(String(msJsonRaw));
       } catch (e) {
         console.warn("JSON 解析失败: " + projectName + " - " + e.message);
+        writeLog("milestoneReminder", "失败", "JSON解析失败: " + projectName, "定时", e.message);
         return;
       }
     }
 
-    milestones.forEach(ms => {
-      const planned = String(ms.planned || "").trim();
-      const actual = String(ms.actual || "").trim();
-      if (!planned || planned === "NA" || actual) return;   // 无计划 或 已完成 → 跳过
+    milestones.forEach(function(ms) {
+      var planned = String(ms.planned || "").trim();
+      var msStatus = String(ms.status || "").trim();
+      if (!planned || planned === "NA" || msStatus === "已完成") return;
 
-      // 匹配显示名
-      const displayName = matchMilestoneName(String(ms.name || ""));
+      // 直接用 JSON name 提取显示名（不再关键词匹配）
+      var displayName = _ms_extractDisplayName(String(ms.name || ""));
       if (!displayName) return;
 
       // 解析日期（JSON 中是字符串 "yyyy-MM-dd"）
-      const plannedDate = new Date(planned + "T00:00:00");
+      var plannedDate = new Date(planned + "T00:00:00");
       if (isNaN(plannedDate.getTime())) return;
       plannedDate.setHours(0, 0, 0, 0);
 
-      const days = Math.round((plannedDate - today) / 86400000);
+      var days = Math.round((plannedDate - today) / 86400000);
 
-      let triggerType = "";
+      var triggerType = "";
       if (days === 0) triggerType = "到期当天";
       else if (days === 1) triggerType = "提前1天";
       else if (days === 2) triggerType = "提前2天";
       else if (days < 0) triggerType = "超期" + Math.abs(days) + "天";
       if (!triggerType) return;
 
-      const dedupKey = projectName + "|" + displayName + "|" + todayStr;
+      var dedupKey = projectName + "|" + displayName + "|" + todayStr;
       if (existingKeys.has(dedupKey)) return;
 
-      const plannedStr = Utilities.formatDate(plannedDate, currentTimeZone, "yyyy-MM-dd");
-      const item = { projectName: projectName, milestoneName: displayName, plannedStr: plannedStr, triggerType: triggerType, days: days };
-      if (!leaderMap[toEmail]) leaderMap[toEmail] = { leaderName: leaderName, overdue: [], upcoming: [] };
-      if (days < 0) leaderMap[toEmail].overdue.push(item);
-      else leaderMap[toEmail].upcoming.push(item);
+      var plannedStr = Utilities.formatDate(plannedDate, currentTimeZone, "yyyy-MM-dd");
+
+      // 事项责任人
+      var ownerName = String(ms.owner || "").trim();
+      var ownerEmail = String(ms.ownerEmail || "").trim().toLowerCase();
+
+      var item = {
+        projectName: projectName,
+        milestoneName: displayName,
+        plannedStr: plannedStr,
+        triggerType: triggerType,
+        days: days,
+        ownerName: ownerName,
+        ownerEmail: ownerEmail
+      };
+
+      // 按 Leader 邮箱分组（用于合并邮件）
+      var groupKey = toEmail || "no-leader";
+      if (!leaderMap[groupKey]) {
+        leaderMap[groupKey] = {
+          leaderName: leaderName,
+          leaderEmail: toEmail,
+          overdue: [],
+          upcoming: [],
+          ownerEmails: {}
+        };
+      }
+      if (days < 0) {
+        leaderMap[groupKey].overdue.push(item);
+      } else {
+        leaderMap[groupKey].upcoming.push(item);
+      }
+      // 收集所有 ownerEmail（用于 TO）
+      if (ownerEmail && ownerEmail !== toEmail) {
+        leaderMap[groupKey].ownerEmails[ownerEmail] = true;
+      }
 
       newLogRows.push([todayStr, projectName, displayName, dedupKey, triggerType]);
       existingKeys.add(dedupKey);
     });
   });
 
-  let itemCount = 0;
-  for (const toEmail in leaderMap) {
-    if (!toEmail) continue;
-    const entry = leaderMap[toEmail];
-    sendMilestoneEmail(toEmail, entry.leaderName, entry.overdue, entry.upcoming, todayStr);
+  var itemCount = 0;
+  for (var key in leaderMap) {
+    if (key === "no-leader" && Object.keys(leaderMap[key].overdue).length === 0 && Object.keys(leaderMap[key].upcoming).length === 0) continue;
+    var entry = leaderMap[key];
+    sendMilestoneEmail(entry, todayStr, userLookup);
     itemCount += entry.overdue.length + entry.upcoming.length;
   }
 
@@ -113,16 +185,8 @@ function milestoneReminder() {
   logSummary(logSheet, itemCount);
 }
 
-/** 根据 JSON 中的完整名称匹配短显示名 */
-function matchMilestoneName(fullName) {
-  for (let i = 0; i < MS_KEYWORDS.length; i++) {
-    if (fullName.indexOf(MS_KEYWORDS[i][1]) !== -1) return MS_KEYWORDS[i][0];
-  }
-  return "";
-}
-
 function extractEmail(str) {
-  const m = str.match(/\(([^)]+@[^)]+)\)/);
+  var m = str.match(/\(([^)]+@[^)]+)\)/);
   return m ? m[1] : "";
 }
 
@@ -130,33 +194,71 @@ function extractName(str) {
   return str.replace(/\s*\([^)]*\)\s*/, "").trim();
 }
 
-function sendMilestoneEmail(toEmail, leaderName, overdueItems, upcomingItems, todayStr) {
-  if (!toEmail) return;
-  const hasOverdue = overdueItems.length > 0;
-  const subject = hasOverdue
-    ? "[项目Milestone逾期] 有 " + overdueItems.length + " 个Milestone已逾期 / Project Milestone Overdue Reminder"
-    : "[项目Milestone临期] 有 " + upcomingItems.length + " 个Milestone即将到期 / Project Milestone Due Soon";
-  const recipients = toEmail === "lyon_zhang@colpal.com"
-    ? toEmail
-    : toEmail + ",lyon_zhang@colpal.com";
-  GmailApp.sendEmail(recipients, subject, "请使用支持HTML的邮件客户端查看此邮件。", {
-    htmlBody: generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, todayStr),
-    cc: "kelland_zhao@colpal.com",
+/**
+ * 发送邮件
+ * @param {Object} entry - { leaderName, leaderEmail, overdue[], upcoming[], ownerEmails{} }
+ */
+function sendMilestoneEmail(entry, todayStr, userLookup) {
+  var toEmail = entry.leaderEmail;
+  var ownerEmails = Object.keys(entry.ownerEmails);
+  var overdueItems = entry.overdue;
+  var upcomingItems = entry.upcoming;
+
+  // 构建 TO 列表：Leader + 各事项责任人
+  var toList = [];
+  if (toEmail) toList.push(toEmail);
+  ownerEmails.forEach(function(e) {
+    if (toList.indexOf(e) === -1) toList.push(e);
+  });
+  if (toList.length === 0) return;
+
+  // 构建 CC 列表
+  var ccList = [];
+
+  // Leader 上级（BI列）
+  if (toEmail) {
+    var supervisorEmail = userLookup.supervisorMap[toEmail.toLowerCase()];
+    if (supervisorEmail && ccList.indexOf(supervisorEmail) === -1) {
+      ccList.push(supervisorEmail);
+    }
+  }
+
+  // INJ 工序管理员（O列=INJ 且 BH列有标记）
+  userLookup.injAdminEmails.forEach(function(e) {
+    if (ccList.indexOf(e) === -1 && toList.indexOf(e) === -1) {
+      ccList.push(e);
+    }
+  });
+
+  // 保留 Kelland 在 CC
+  var kellandEmail = "kelland_zhao@colpal.com";
+  if (ccList.indexOf(kellandEmail) === -1 && toList.indexOf(kellandEmail) === -1) {
+    ccList.push(kellandEmail);
+  }
+
+  var hasOverdue = overdueItems.length > 0;
+  var subject = hasOverdue
+    ? "【项目逾期】有 " + overdueItems.length + " 个Milestone已逾期"
+    : "【项目临期】有 " + upcomingItems.length + " 个Milestone即将到期";
+
+  GmailApp.sendEmail(toList.join(","), subject, "请使用支持HTML的邮件客户端查看此邮件。", {
+    htmlBody: generateMilestoneEmailContent(entry.leaderName, overdueItems, upcomingItems, todayStr),
+    cc: ccList.join(","),
     name: "项目Milestone提醒系统"
   });
 }
 
 function generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, todayStr) {
-  const hasOverdue = overdueItems.length > 0;
-  const accentColor = hasOverdue ? "#f44336" : "#f39c12";
-  const darkColor   = hasOverdue ? "#d32f2f" : "#e65100";
-  const bgColor     = hasOverdue ? "#ffebee" : "#fff8e1";
+  var hasOverdue = overdueItems.length > 0;
+  var accentColor = hasOverdue ? "#f44336" : "#f39c12";
+  var darkColor   = hasOverdue ? "#d32f2f" : "#e65100";
+  var bgColor     = hasOverdue ? "#ffebee" : "#fff8e1";
 
-  const buildTable = function(items, isOverdue) {
-    const headerGrad = isOverdue
+  var buildTable = function(items, isOverdue) {
+    var headerGrad = isOverdue
       ? "linear-gradient(135deg,#f44336,#d32f2f)"
       : "linear-gradient(135deg,#f39c12,#e67e22)";
-    const rowBgAlt = isOverdue ? "#fff5f5" : "#fffbf0";
+    var rowBgAlt = isOverdue ? "#fff5f5" : "#fffbf0";
     var rows = "";
     items.forEach(function(item, i) {
       var badgeLabel;
@@ -189,14 +291,14 @@ function generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, 
   var body = "\n    <div style='font-family:Arial,sans-serif;max-width:800px;margin:0 auto;background-color:#f8f9fa;padding:20px;'>" +
     "<div style='background:" + bgColor + ";border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;border-left:5px solid " + accentColor + ";'>" +
     "<h2 style='color:" + darkColor + ";text-align:center;margin-bottom:20px;border-bottom:3px solid " + accentColor + ";padding-bottom:10px;'>" +
-    (hasOverdue ? "[逾期提醒] 项目Milestone已逾期" : "[临期提醒] 项目Milestone即将到期") + "<br>" +
-    "<span style='font-size:0.8em;'>" + (hasOverdue ? "Project Milestone Overdue Reminder" : "Project Milestone Due Soon Reminder") + "</span></h2>" +
+    (hasOverdue ? "【逾期提醒】项目Milestone已逾期" : "【临期提醒】项目Milestone即将到期") + "<br>" +
+    "<span style='font-size:0.8em;'>Project Milestone Reminder</span></h2>" +
     "<p style='font-size:16px;line-height:1.6;color:" + darkColor + ";'>" +
     "您好" + (leaderName ? " <b>" + leaderName + "</b>" : "") + "！（" + todayStr + "）以下项目 Milestone 需要您关注：<br>" +
     "<span style='font-size:0.9em;opacity:0.85;'>Hello" + (leaderName ? " <b>" + leaderName + "</b>" : "") + "! The following project milestones require your attention (" + todayStr + "):</span></p>" +
     "<p style='font-size:15px;line-height:1.6;color:" + darkColor + ";font-weight:600;background:rgba(0,0,0,0.05);padding:10px 16px;border-radius:6px;margin-top:10px;'>" +
-    "⚠️ 请" + (leaderName ? " " + leaderName : "") + "及时跟进并更新项目进度，在表格中填写实际完成日期！<br>" +
-    "<span style='font-weight:400;font-size:0.9em;opacity:0.85;'>Please" + (leaderName ? " " + leaderName + "," : "") + " update the project progress and fill in the actual completion date promptly!</span></p></div>";
+    "⚠️ 请" + (leaderName ? " " + leaderName : "") + "及时跟进并更新项目进度！<br>" +
+    "<span style='font-weight:400;font-size:0.9em;opacity:0.85;'>Please update the project progress promptly!</span></p></div>";
 
   if (overdueItems.length > 0) {
     body += "\n      <div style='background:#ffffff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;'>" +
@@ -214,8 +316,8 @@ function generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, 
 
   body += "\n      <div style='background:#ffffff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;'>" +
     "<div style='text-align:center;color:" + darkColor + ";font-size:14px;line-height:1.6;'>" +
-    "<p style='margin-bottom:10px;font-weight:600;'>请及时跟进并在表格中更新实际完成日期！<br>" +
-    "<span style='font-size:0.9em;opacity:0.85;'>Please follow up and update the actual completion date in the spreadsheet!</span></p>" +
+    "<p style='margin-bottom:10px;font-weight:600;'>请及时跟进并更新项目进度！<br>" +
+    "<span style='font-size:0.9em;opacity:0.85;'>Please follow up and update the project progress!</span></p>" +
     "<p style='margin:0;font-style:italic;'>此邮件由系统自动发送，请勿回复。<br>" +
     "<span style='font-size:0.8em;opacity:0.7;'>This email is automatically sent by the system, please do not reply.</span></p></div></div></div>";
 
@@ -223,6 +325,6 @@ function generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, 
 }
 
 function logSummary(logSheet, count) {
-  const timestamp = Utilities.formatDate(new Date(), currentTimeZone, "yyyy-MM-dd HH:mm:ss");
+  var timestamp = Utilities.formatDate(new Date(), currentTimeZone, "yyyy-MM-dd HH:mm:ss");
   logSheet.appendRow([timestamp, count, "Milestone邮件提醒执行完成"]);
 }
