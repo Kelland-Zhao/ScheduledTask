@@ -87,7 +87,7 @@ function milestoneReminder() {
     var status = String(row[3] || "").trim();             // D列：状态
     if (!projectName || status !== "Ongoing") return;
 
-    var toEmail = extractEmail(leaderStr);
+    var toEmail = extractEmail(leaderStr).toLowerCase();
     var leaderName = extractName(leaderStr);
 
     // 解析 E列 Milestones_JSON
