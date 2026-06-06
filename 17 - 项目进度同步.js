@@ -1,4 +1,5 @@
-// V20260606.1 — 项目跟踪进度同步至 Kaizen & CI（项目总表 E列 → Master Data N列）
+// V20260606.2 — 项目跟踪进度同步至 Kaizen & CI（项目总表 E列 → Master Data N列）
+// 格式: 序号. 任务描述  责任人  计划完成时间  状态
 
 var SYNC_PT_SS_ID = "1aoQDjeWU9Xa9clloyTwiXL6WS62tYVbB0-VOavpAgAM";
 var SYNC_PT_SHEET = "项目总表";
@@ -15,7 +16,7 @@ function _sp_extractName(fullName) {
 
 /**
  * 项目跟踪进度同步
- * 读取「项目总表」E列 Milestones_JSON → 格式化为「序号|任务描述|计划完成时间|责任人」
+ * 读取「项目总表」E列 Milestones_JSON → 格式化为「序号. 任务描述  责任人  计划完成时间  状态」
  * 按 G列项目编号匹配写入「Master Data」N列
  */
 function syncProjectProgress(e) {
@@ -61,9 +62,10 @@ function syncProjectProgress(e) {
 
           var displayName = _sp_extractName(String(ms.name || ""));
           var owner = String(ms.owner || "").trim();
+          var status = String(ms.status || "").trim();
 
           seq++;
-          progressLines.push(seq + "|" + displayName + "|" + planned + "|" + owner);
+          progressLines.push(seq + ". " + displayName + "  " + owner + "  " + planned + "  " + status);
         });
       }
 
