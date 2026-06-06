@@ -91,7 +91,9 @@ function milestoneReminder() {
     var projectName = String(row[0] || "").trim();
     var leaderStr = String(row[1] || "").trim();
     var status = String(row[3] || "").trim();             // D列：状态
+    var projectType = String(row[5] || "").trim();        // F列：类型
     if (!projectName || status !== "Ongoing") return;
+    if (projectType !== "新品/新自动化" && projectType !== "CI") return;  // 仅新品自动化和CI项目
 
     var toEmail = extractEmail(leaderStr).toLowerCase();
     var leaderName = extractName(leaderStr);
