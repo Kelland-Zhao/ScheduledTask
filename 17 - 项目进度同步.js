@@ -16,7 +16,7 @@ function _sp_extractName(fullName) {
 /**
  * 项目跟踪进度同步
  * 读取「项目总表」E列 Milestones_JSON → 格式化为「序号|任务描述|计划完成时间|责任人」
- * 按 A列项目编号匹配写入「Master Data」N列
+ * 按 G列项目编号匹配写入「Master Data」N列
  */
 function syncProjectProgress(e) {
   var trigger = e ? "定时" : "手动";
@@ -37,7 +37,7 @@ function syncProjectProgress(e) {
 
     for (var i = 1; i < ptData.length; i++) {
       var row = ptData[i];
-      var projectNumber = String(row[0] || "").trim();  // A列：项目编号
+      var projectNumber = String(row[6] || "").trim();  // G列：项目编号
       var msJsonRaw = row[4];                            // E列：Milestones_JSON
 
       if (!projectNumber) continue;
