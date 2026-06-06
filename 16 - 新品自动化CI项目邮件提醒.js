@@ -57,7 +57,8 @@ function _ms_extractDisplayName(fullName) {
   return fullName.trim();
 }
 
-function milestoneReminder() {
+function milestoneReminder(e) {
+  var trigger = e ? "定时" : "手动";
   var projectSpreadsheet = SpreadsheetApp.openById(PROJECT_TRACKING_SPREADSHEET_ID);
   var projectSheet = projectSpreadsheet.getSheetByName(PROJECT_SHEET_NAME);
   var logSheet = saas.getSheetByName("Log");
@@ -75,7 +76,7 @@ function milestoneReminder() {
 
   var lastRow = projectSheet.getLastRow();
   if (lastRow <= 1) {
-    writeLog("milestoneReminder", "跳过", "项目总表无数据", "定时", "");
+    writeLog("milestoneReminder", "跳过", "项目总表无数据", trigger, "");
     return;
   }
 
@@ -106,7 +107,7 @@ function milestoneReminder() {
         milestones = JSON.parse(String(msJsonRaw));
       } catch (e) {
         console.warn("JSON 解析失败: " + projectName + " - " + e.message);
-        writeLog("milestoneReminder", "失败", "JSON解析失败: " + projectName, "定时", e.message);
+        writeLog("milestoneReminder", "失败", "JSON解析失败: " + projectName, trigger, e.message);
         return;
       }
     }
@@ -181,7 +182,7 @@ function milestoneReminder() {
         "milestoneReminder",
         triggerType,
         dedupKey,
-        "定时",
+        trigger,
         projectName + " | " + displayName
       ]);
       existingKeys.add(dedupKey);
@@ -199,7 +200,7 @@ function milestoneReminder() {
   if (newLogRows.length > 0) {
     logSheet.getRange(logSheet.getLastRow() + 1, 1, newLogRows.length, 6).setValues(newLogRows);
   }
-  writeLog("milestoneReminder", "成功", "发送 " + itemCount + " 条提醒", "定时", "");
+  writeLog("milestoneReminder", "成功", "发送 " + itemCount + " 条提醒", trigger, "");
 }
 
 function extractEmail(str) {
@@ -270,17 +271,20 @@ function sendMilestoneEmail(entry, todayStr, userLookup) {
     : "【项目临期】有 " + upcomingItems.length + " 个Milestone即将到期";
 
   GmailApp.sendEmail(toList.join(","), subject, "请使用支持HTML的邮件客户端查看此邮件。", {
-    htmlBody: generateMilestoneEmailContent(entry.leaderName, overdueItems, upcomingItems, todayStr),
+    htmlBody: generateMilestoneEmailContent(entry.leaderName, isNewProduct, overdueItems, upcomingItems, todayStr),
     cc: ccList.join(","),
     name: "项目Milestone提醒系统"
   });
 }
 
-function generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, todayStr) {
+function generateMilestoneEmailContent(leaderName, isNewProduct, overdueItems, upcomingItems, todayStr) {
   var hasOverdue = overdueItems.length > 0;
   var accentColor = hasOverdue ? "#f44336" : "#f39c12";
   var darkColor   = hasOverdue ? "#d32f2f" : "#e65100";
   var bgColor     = hasOverdue ? "#ffebee" : "#fff8e1";
+
+  // 新品/新自动化 邮件 TO 是管理员，不称呼 Leader
+  var greetingName = isNewProduct ? "" : leaderName;
 
   var buildTable = function(items, isOverdue) {
     var headerGrad = isOverdue
@@ -322,10 +326,10 @@ function generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, 
     (hasOverdue ? "【逾期提醒】项目Milestone已逾期" : "【临期提醒】项目Milestone即将到期") + "<br>" +
     "<span style='font-size:0.8em;'>Project Milestone Reminder</span></h2>" +
     "<p style='font-size:16px;line-height:1.6;color:" + darkColor + ";'>" +
-    "您好" + (leaderName ? " <b>" + leaderName + "</b>" : "") + "！（" + todayStr + "）以下项目 Milestone 需要您关注：<br>" +
-    "<span style='font-size:0.9em;opacity:0.85;'>Hello" + (leaderName ? " <b>" + leaderName + "</b>" : "") + "! The following project milestones require your attention (" + todayStr + "):</span></p>" +
+    "您好" + (greetingName ? " <b>" + greetingName + "</b>" : "") + "！（" + todayStr + "）以下项目 Milestone 需要您关注：<br>" +
+    "<span style='font-size:0.9em;opacity:0.85;'>Hello" + (greetingName ? " <b>" + greetingName + "</b>" : "") + "! The following project milestones require your attention (" + todayStr + "):</span></p>" +
     "<p style='font-size:15px;line-height:1.6;color:" + darkColor + ";font-weight:600;background:rgba(0,0,0,0.05);padding:10px 16px;border-radius:6px;margin-top:10px;'>" +
-    "⚠️ 请" + (leaderName ? " " + leaderName : "") + "及时跟进并更新项目进度！<br>" +
+    "⚠️ 请" + (greetingName ? " " + greetingName : "") + "及时跟进并更新项目进度！<br>" +
     "<span style='font-weight:400;font-size:0.9em;opacity:0.85;'>Please update the project progress promptly!</span></p></div>";
 
   if (overdueItems.length > 0) {
