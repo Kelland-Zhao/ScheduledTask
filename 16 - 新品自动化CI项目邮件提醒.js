@@ -75,7 +75,7 @@ function milestoneReminder() {
 
   var lastRow = projectSheet.getLastRow();
   if (lastRow <= 1) {
-    logSummary(logSheet, 0);
+    writeLog("milestoneReminder", "跳过", "项目总表无数据", "定时", "");
     return;
   }
 
@@ -175,7 +175,15 @@ function milestoneReminder() {
         leaderMap[groupKey].ownerEmails[ownerEmail] = true;
       }
 
-      newLogRows.push([todayStr, projectName, displayName, dedupKey, triggerType]);
+      // Log 格式对齐 writeLog: 时间戳 | 函数名 | 状态 | 详情(dedupKey) | 触发 | 备注
+      newLogRows.push([
+        formatVariableAsDateHms(new Date()),
+        "milestoneReminder",
+        triggerType,
+        dedupKey,
+        "定时",
+        projectName + " | " + displayName
+      ]);
       existingKeys.add(dedupKey);
     });
   });
@@ -189,9 +197,9 @@ function milestoneReminder() {
   }
 
   if (newLogRows.length > 0) {
-    logSheet.getRange(logSheet.getLastRow() + 1, 1, newLogRows.length, 5).setValues(newLogRows);
+    logSheet.getRange(logSheet.getLastRow() + 1, 1, newLogRows.length, 6).setValues(newLogRows);
   }
-  logSummary(logSheet, itemCount);
+  writeLog("milestoneReminder", "成功", "发送 " + itemCount + " 条提醒", "定时", "");
 }
 
 function extractEmail(str) {
@@ -342,9 +350,4 @@ function generateMilestoneEmailContent(leaderName, overdueItems, upcomingItems, 
     "<span style='font-size:0.8em;opacity:0.7;'>This email is automatically sent by the system, please do not reply.</span></p></div></div></div>";
 
   return body;
-}
-
-function logSummary(logSheet, count) {
-  var timestamp = Utilities.formatDate(new Date(), currentTimeZone, "yyyy-MM-dd HH:mm:ss");
-  logSheet.appendRow([timestamp, count, "Milestone邮件提醒执行完成"]);
 }
