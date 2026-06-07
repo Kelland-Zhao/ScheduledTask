@@ -1,4 +1,4 @@
-// V20260607.1 — 交接班数据年度备份模块
+// V20260607.2 — 交接班数据年度备份模块（批量读写重构）
 
 // ========== 交接班数据备份配置 ==========
 const SHIFT_SPREADSHEET_ID = "10Fnrqc1AUiPqOi-b2UsKgR-Ww-BNdIla_HB_HjVdI0w";
@@ -8,6 +8,7 @@ const SHIFT_DATE_COL_IDX = 11; // L列 提交日期 (0-based)
 
 /**
  * 备份上一年交接班数据到 Drive 文件夹，并从源表删除
+ * 采用「筛选保留行 → 全量回写」方案，避免逐行 deleteRow 的 N 次 API 调用
  * @param {Object} e - 触发器事件对象（定时触发时传入，手动调用时为 undefined）
  */
 function backupShiftRecords(e) {
@@ -33,20 +34,18 @@ function backupShiftRecords(e) {
     var header = allData[0];
     var colCount = header.length;
 
-    // 2. 筛选上一年数据行
+    // 2. 单次遍历：拆分为「上年数据(备份)」和「保留数据(回写)」
     var prevYearRows = [];
-    var prevYearRowNums = []; // 1-based sheet row numbers（用于删除）
+    var keepRows = [header]; // 保留行以表头开头
 
     for (var i = 1; i < allData.length; i++) {
       var dateVal = allData[i][SHIFT_DATE_COL_IDX];
-      if (!dateVal) continue;
+      var d = dateVal ? _sb_parseDate(dateVal) : null;
 
-      var d = _sb_parseDate(dateVal);
-      if (!d) continue;
-
-      if (d.getFullYear() === prevYear) {
+      if (d && d.getFullYear() === prevYear) {
         prevYearRows.push(allData[i]);
-        prevYearRowNums.push(i + 1); // sheet 行号 = 数组索引 + 1
+      } else {
+        keepRows.push(allData[i]);
       }
     }
 
@@ -55,7 +54,7 @@ function backupShiftRecords(e) {
       return;
     }
 
-    // 3. 创建备份文件
+    // 3. 创建备份文件 + 写入上年数据
     var timestamp = Utilities.formatDate(now, currentTimeZone, "yyyy-MM-dd HH:mm:ss");
     var backupFileName = "EDS_DS_" + prevYear + "_备份时间:" + timestamp;
     var destFolder = DriveApp.getFolderById(SHIFT_BACKUP_FOLDER_ID);
@@ -72,15 +71,10 @@ function backupShiftRecords(e) {
       }
     }
 
-    // 4. 分批写入备份（表头 + 数据行）
     var backupData = [header].concat(prevYearRows);
-    var CHUNK = 50000;
-    for (var r = 0; r < backupData.length; r += CHUNK) {
-      var chunk = backupData.slice(r, r + CHUNK);
-      backupSheet.getRange(r + 1, 1, chunk.length, colCount).setValues(chunk);
-    }
+    _sb_writeChunked(backupSheet, backupData, colCount);
 
-    // 5. 验证备份
+    // 4. 验证备份
     var backupRowCount = backupSheet.getLastRow() - 1; // 减去表头
     if (backupRowCount !== prevYearRows.length) {
       writeLog("backupShiftRecords", "异常",
@@ -89,24 +83,33 @@ function backupShiftRecords(e) {
       return;
     }
 
-    // 6. 从源表删除（从下往上删，避免行号偏移）
-    for (var k = prevYearRowNums.length - 1; k >= 0; k--) {
-      sourceSheet.deleteRow(prevYearRowNums[k]);
+    // 5. 源表批量替换：清空 → 回写保留行（仅 1 次 clear + 1 次 write，替代 N 次 deleteRow）
+    sourceSheet.clearContents();
+    _sb_writeChunked(sourceSheet, keepRows, colCount);
+
+    // 清理多余空白行，避免 sheet 膨胀
+    var newLastRow = keepRows.length;
+    var maxRows = sourceSheet.getMaxRows();
+    if (maxRows - newLastRow > 500) {
+      sourceSheet.deleteRows(newLastRow + 1, maxRows - newLastRow);
     }
 
     writeLog("backupShiftRecords", "成功",
       backupFileName + " 已剪切 " + prevYearRows.length + " 行",
       triggerLabel, "");
 
-    // 同步更新源表行数，避免空白行残留
-    var remainingRows = sourceSheet.getMaxRows() - sourceSheet.getLastRow();
-    if (remainingRows > 500) {
-      sourceSheet.deleteRows(sourceSheet.getLastRow() + 1, remainingRows);
-    }
-
   } catch (err) {
     writeLog("backupShiftRecords", "异常", "备份失败: " + err.message, triggerLabel, "");
     console.error("backupShiftRecords error:", err);
+  }
+}
+
+/** 分批写入 sheet，避免单次 setValues 超限 */
+function _sb_writeChunked(sheet, data, colCount) {
+  var CHUNK = 50000;
+  for (var r = 0; r < data.length; r += CHUNK) {
+    var chunk = data.slice(r, r + CHUNK);
+    sheet.getRange(r + 1, 1, chunk.length, colCount).setValues(chunk);
   }
 }
 
