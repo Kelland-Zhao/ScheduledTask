@@ -1,5 +1,6 @@
-// V20260527.1 — 故障报告邮件通知模块
+// V20260608.2 — 故障报告邮件通知模块
 // 功能：自动检测交接班模块故障条目，对超时且未填写故障报告的条目发送邮件通知
+// 变更：收件人从"通知清单"切换为 userID 表动态过滤
 
 // ========== 故障报告配置 ==========
 const FAULT_CONFIG = {
@@ -9,9 +10,6 @@ const FAULT_CONFIG = {
   // 工序车间数据表名称
   SHIFT_SHEETS: ['Shift_Records'],
 
-  // 通知配置表名称（位于 SHEET_ID 表格中）
-  NOTIFICATION_SHEET: '通知清单',
-
   // 工序时间阈值（分钟）
   PROCESS_THRESHOLDS: {
     'INJ': 240,
@@ -19,12 +17,10 @@ const FAULT_CONFIG = {
     'PK': 60
   },
 
-  // 工序字段映射（交接班模块工序 → 通知清单工序）
-  PROCESS_MAPPING: {
-    'INJ': 'IM',
-    'TF': 'TF',
-    'PK': 'PK'
-  },
+  // userID 列索引（0-based）
+  USERID_PROCESS_COL: 14,       // O列 — 工序（INJ/TF/PK 等）
+  USERID_EMAIL_COL: 9,          // J列 — GMail（复用全局 PERMISSION_EMAIL_COL_IDX）
+  USERID_FAULT_PERM_COL: 57,    // BF列 — 故障报告管理权限（Y=有权限）
 
   EMAIL_SUBJECT_PREFIX: '[故障报告提醒]',
   ADMIN_EMAIL: 'kelland_zhao@colpal.com',
@@ -185,35 +181,29 @@ function filterQualifiedFaultItems(faultItems) {
 
 function getNotificationConfig() {
   try {
-    const spreadsheet = SpreadsheetApp.openById(FAULT_CONFIG.SHEET_ID);
-    const sheet = spreadsheet.getSheetByName(FAULT_CONFIG.NOTIFICATION_SHEET);
+    const sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
 
     if (!sheet) {
-      console.error('找不到通知配置表: ' + FAULT_CONFIG.NOTIFICATION_SHEET);
+      console.error('找不到 userID 表');
       return [];
     }
 
     const data = sheet.getDataRange().getValues();
-    const headers = data[0];
     const configs = [];
+    const targetProcesses = ['INJ', 'TF', 'PK'];
 
     for (let i = 1; i < data.length; i++) {
       const row = data[i];
+      const process = String(row[FAULT_CONFIG.USERID_PROCESS_COL] || '').trim();
+      const email = String(row[FAULT_CONFIG.USERID_EMAIL_COL] || '').trim();
+      const hasPerm = String(row[FAULT_CONFIG.USERID_FAULT_PERM_COL] || '').trim();
 
-      if (row[headers.indexOf('Function')] === '故障报告分配') {
-        const config = {
-          function: row[headers.indexOf('Function')],
-          process: row[headers.indexOf('Process')],
-          workshop: row[headers.indexOf('Workshop')],
-          mail: row[headers.indexOf('Mail')]
-        };
-
-        if (config.process && config.workshop && config.mail) {
-          configs.push(config);
-        }
+      if (targetProcesses.indexOf(process) !== -1 && hasPerm === 'Y' && email) {
+        configs.push({ process: process, mail: email });
       }
     }
 
+    console.log('从 userID 过滤到 ' + configs.length + ' 条通知配置');
     return configs;
 
   } catch (error) {
@@ -263,10 +253,8 @@ function getRecipients(processType, notificationConfig) {
   var recipients = [];
 
   try {
-    var mappedType = FAULT_CONFIG.PROCESS_MAPPING[processType] || processType;
-
     notificationConfig.forEach(function(config) {
-      if (config.process === mappedType) {
+      if (config.process === processType) {
         var emails = config.mail.split(';').map(function(e) { return e.trim(); }).filter(function(e) { return e; });
         recipients = recipients.concat(emails);
       }
@@ -440,9 +428,7 @@ function testFaultEmailSending() {
   }];
 
   var testConfig = [{
-    function: '故障报告分配',
-    process: 'IM',
-    workshop: 'TB1',
+    process: 'INJ',
     mail: FAULT_CONFIG.ADMIN_EMAIL
   }];
 
