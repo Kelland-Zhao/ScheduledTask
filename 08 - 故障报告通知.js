@@ -280,7 +280,7 @@ function sendProcessEmail(processType, faultItems, recipients, trigger) {
 
     recipients.forEach(function(recipient) {
       try {
-        GmailApp.sendEmail(recipient, subject, '', { htmlBody: body });
+        GmailApp.sendEmail(recipient, subject, '', { htmlBody: body, cc: FAULT_CONFIG.ADMIN_EMAIL });
         console.log('成功发送邮件给: ' + recipient);
         writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，' + faultItems.length + ' 个故障条目', trigger, processType);
       } catch (emailError) {
