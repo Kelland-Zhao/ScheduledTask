@@ -169,6 +169,18 @@ function filterQualifiedFaultItems(faultItems) {
       var statusStr = String(item.status);
       if (statusStr.indexOf('已解决') === -1 && statusStr.indexOf('Solved') === -1) return false;
 
+      // PK 工序专属规则（对齐 EDS FailureReport_Manage）
+      if (item.processType === 'PK') {
+        // 提交日期必须 ≥ 2026-05-15
+        if (item.submitDate) {
+          var submitDateObj = new Date(item.submitDate);
+          if (submitDateObj < new Date('2026-05-15')) return false;
+        }
+        // 排除"转规格"问题
+        var problemDesc = String(item.problemDesc || '');
+        if (problemDesc.indexOf('转规格') !== -1) return false;
+      }
+
       return true;
     } catch (error) {
       console.error('筛选故障条目 ' + item.id + ' 时出错:', error);
