@@ -7,11 +7,7 @@ const FAULT_CONFIG = {
   SHEET_ID: '10Fnrqc1AUiPqOi-b2UsKgR-Ww-BNdIla_HB_HjVdI0w',
 
   // 工序车间数据表名称
-  SHIFT_SHEETS: [
-    'Shift_INJ_TB1', 'Shift_INJ_TB2',
-    'Shift_TF_TB1', 'Shift_TF_TB2',
-    'Shift_PK_TB1', 'Shift_PK_TB2'
-  ],
+  SHIFT_SHEETS: ['Shift_Records'],
 
   // 通知配置表名称（位于 SHEET_ID 表格中）
   NOTIFICATION_SHEET: '通知清单',
@@ -137,7 +133,7 @@ function createFaultItem(row, headers, sheetName) {
       submitDate: val('提交日期'),
       transferToMaintenance: val('是否转保养'),
       recorder: val('填写人'),
-      workshop: extractWorkshop(sheetName),
+      workshop: val('车间'),
       processType: val('工序'),
       participants: val('参与人数'),
       machineModel: val('机型'),
