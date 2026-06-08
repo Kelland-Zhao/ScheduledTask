@@ -321,12 +321,12 @@ function generateEmailSubject(processType, faultItems) {
 // ========== 工序名称 ==========
 
 function getProcessDisplayName(processType) {
-  var names = { 'INJ': '注塑', 'TF': '涂装', 'PK': '包装' };
+  var names = { 'INJ': '注塑', 'TF': '植磨毛', 'PK': '包装' };
   return names[processType] || processType;
 }
 
 function getProcessDisplayNameEn(processType) {
-  var names = { 'INJ': 'Injection Molding', 'TF': 'Painting', 'PK': 'Packaging' };
+  var names = { 'INJ': 'Injection Molding', 'TF': 'Tufting', 'PK': 'Packaging' };
   return names[processType] || processType;
 }
 
