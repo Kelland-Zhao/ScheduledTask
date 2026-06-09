@@ -122,14 +122,13 @@ function writeKaizenKPI(e) {
   }
 }
 
-/** 季度字符串转换为对应月份（季度末后一个月），如 "2026第一季度" → "2026-04" */
+/** 季度字符串转换为季度末月份，如 "2026第一季度" → "2026-03"，"2026第二季度" → "2026-06" */
 function _kz_quarterToMonth(timeStr) {
   const s = String(timeStr || "").trim();
   const m = s.match(/^(\d{4})第([一二三四])季度$/);
   if (!m) return "";
-  const qMap = { "一": "04", "二": "07", "三": "10", "四": "01" };
-  const y = m[2] === "四" ? parseInt(m[1], 10) + 1 : parseInt(m[1], 10);
-  return y + "-" + qMap[m[2]];
+  const qMap = { "一": "03", "二": "06", "三": "09", "四": "12" };
+  return m[1] + "-" + qMap[m[2]];
 }
 
 /** 月份值标准化为 yyyy-MM，兼容 Date 对象（Google Sheets 日期自动转换） */
