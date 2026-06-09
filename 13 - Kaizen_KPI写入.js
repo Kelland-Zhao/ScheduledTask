@@ -1,4 +1,4 @@
-// V20260530.05 — Kaizen KPI 数据写入（按月份+Process+Sub_Process分组，upsert保留历史）
+// V20260609.02 — Kaizen KPI 数据写入（月度+季度获奖写入，upsert保留历史）
 
 const KAIZEN_SOURCE_SS_ID = "1R0O_GfCQyQWXJ6ZR5AfE1xgCOuPrMP3FFOZ6u3I9rLg";
 const KAIZEN_DEST_SS_ID   = "1eeG8wA9YbCZfNv6qndDKa3vs7VKs2MT2fFG12Tk-At4";
@@ -86,11 +86,50 @@ function writeKaizenKPI(e) {
       destSheet.getRange(appendStartRow, 1, appendRows.length, 6).setValues(appendRows);
     }
 
+    // 5. 读取季度优秀Kaizen记录，按月份+Sub_Process统计获奖数量，更新 Master_Data E列
+    const qSheet = destSS.getSheetByName("季度优秀Kaizen记录");
+    if (qSheet) {
+      const qRows = qSheet.getDataRange().getValues();
+      const qGroups = {};
+      for (let i = 1; i < qRows.length; i++) {
+        const qt  = String(qRows[i][0] || "").trim();
+        const sub = String(qRows[i][7] || "").trim();
+        if (!qt || !sub) continue;
+        const month = _kz_quarterToMonth(qt);
+        if (!month) continue;
+        if (!qGroups[month]) qGroups[month] = {};
+        qGroups[month][sub] = (qGroups[month][sub] || 0) + 1;
+      }
+
+      const md2LastRow = Math.max(destSheet.getLastRow(), 1);
+      const md2Vals = destSheet.getRange(1, 1, md2LastRow, 6).getValues();
+      let qUpdateCount = 0;
+      for (let i = 1; i < md2Vals.length; i++) {
+        const month = _kz_normalizeMonth(md2Vals[i][0]);
+        const sub   = String(md2Vals[i][5] || "").trim();
+        if (month && sub && qGroups[month] && qGroups[month][sub] !== undefined) {
+          destSheet.getRange(i + 1, 5).setValue(qGroups[month][sub]);
+          qUpdateCount++;
+        }
+      }
+      try { writeLog("writeKaizenKPI", "成功(季度)", "季度获奖写入 " + qUpdateCount + " 行", trigger, ""); } catch (err) {}
+    }
+
     try { writeLog("writeKaizenKPI", "成功", "更新 " + updateCount + " 行，追加 " + appendCount + " 行到 " + KAIZEN_DEST_SHEET, trigger, ""); } catch (err) {}
   } catch (err) {
     try { writeLog("writeKaizenKPI", "失败", err.message, trigger, err.stack || ""); } catch (e) {}
     console.error(err.stack || err.message);
   }
+}
+
+/** 季度字符串转换为对应月份（季度末后一个月），如 "2026第一季度" → "2026-04" */
+function _kz_quarterToMonth(timeStr) {
+  const s = String(timeStr || "").trim();
+  const m = s.match(/^(\d{4})第([一二三四])季度$/);
+  if (!m) return "";
+  const qMap = { "一": "04", "二": "07", "三": "10", "四": "01" };
+  const y = m[2] === "四" ? parseInt(m[1], 10) + 1 : parseInt(m[1], 10);
+  return y + "-" + qMap[m[2]];
 }
 
 /** 月份值标准化为 yyyy-MM，兼容 Date 对象（Google Sheets 日期自动转换） */
