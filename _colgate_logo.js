@@ -1,0 +1,2 @@
+﻿// Colgate-Palmolive Logo PNG (Wikipedia) — Gmail 兼容
+var _dr_COLGATE_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Colgate-Palmolive_%282025%29.svg/500px-Colgate-Palmolive_%282025%29.svg.png";
