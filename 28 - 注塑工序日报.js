@@ -1,6 +1,6 @@
-// V20260611.01 — 注塑工序日报
+// V20260613.02 — 注塑工序日报
 // 入口：sendDailyProcessReport（每日 08:30 定时 or 手动）
-// 数据源：_pd_TARGET_SHEET_ID → MasterData sheet（8列：日期班次/车间/开机数/姓名/安排工时/月份/周/实际工时）
+// 数据源：_pd_TARGET_SHEET_ID → MasterData（人员工时） + TB1/TB2（开机数直接读取，独立于人员排班）
 // 逻辑：获取第二天排班数据，按车间×班次汇总，HTML 邮件发送给 INJ S&C 管理层
 
 // ========== 配置 ==========
@@ -43,8 +43,18 @@ function sendDailyProcessReport(e) {
 
     var data = masterSheet.getRange(2, 1, lastRow - 1, 8).getValues();
 
-    // 3. 筛选第二天数据并聚合
+    // 3. 筛选第二天数据并聚合（人员工时来自 MasterData）
     var summary = _dr_aggregateByWorkshopShift(data, tomorrowDateStr);
+
+    // 3.5 开机数从 TB1/TB2 直接读取（独立于人员排班数据）
+    var machineCounts = _dr_getMachineCounts(tomorrowDateStr);
+    ["TB1", "TB2"].forEach(function(ws) {
+      _dr_SHIFT_ORDER.forEach(function(sh) {
+        if (machineCounts[ws] && machineCounts[ws][sh] !== undefined) {
+          summary[ws][sh].machines = machineCounts[ws][sh];
+        }
+      });
+    });
 
     // 4. 构建邮件 HTML
     var todayStr = formatVariableAsDate(new Date());
@@ -140,6 +150,32 @@ function _dr_aggregateByWorkshopShift(data, targetDateStr) {
   });
 
   return summary;
+}
+
+/** 从 TB1/TB2 直接读取指定日期的开机数（独立于人员排班） */
+function _dr_getMachineCounts(targetDateStr) {
+  var result = { TB1: {}, TB2: {} };
+  try {
+    var ss = SpreadsheetApp.openById(_pd_TARGET_SHEET_ID);
+    ["TB1", "TB2"].forEach(function(ws) {
+      var sheet = ss.getSheetByName(ws);
+      if (!sheet) return;
+      var lastCol = sheet.getLastColumn();
+      if (lastCol < 2) return;
+      var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+      var machineRow = sheet.getRange(2, 1, 1, lastCol).getValues()[0];
+      for (var c = 1; c < headers.length; c++) {
+        var dateShift = String(headers[c] || "").trim();
+        if (!dateShift || dateShift.indexOf(targetDateStr) !== 0) continue;
+        var shiftPart = _dr_splitShift(dateShift);
+        if (!shiftPart || _dr_SHIFT_ORDER.indexOf(shiftPart) === -1) continue;
+        result[ws][shiftPart] = Number(machineRow[c]) || 0;
+      }
+    });
+  } catch (err) {
+    console.error("读取开机数失败: " + err.message);
+  }
+  return result;
 }
 
 /** 从日期班次字符串提取班次部分 "2026.06.12_2早" → "2早" */
