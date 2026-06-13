@@ -281,27 +281,29 @@ function _pd_sendPersonnelGapAlert(gaps, trigger) {
     toEmails.forEach(function(e) { delete ccSet[e]; });
     var ccEmails = Object.keys(ccSet);
 
-    // 按日期分组 gaps
-    var dateGroups = {};
+    // 构建 gap 行（日期 | 车间 | 班次），按日期+车间排序
+    var gapRows = "";
+    gaps.sort(function(a, b) {
+      var d = String(a.dateShift).localeCompare(String(b.dateShift));
+      if (d !== 0) return d;
+      return a.workshop.localeCompare(b.workshop);
+    });
     gaps.forEach(function(g) {
       var dateStr = _pd_extractDateFromShift(g.dateShift);
       var shiftPart = _pd_splitShift(g.dateShift);
-      if (!dateGroups[dateStr]) dateGroups[dateStr] = [];
-      dateGroups[dateStr].push(g.workshop + " " + _pd_shiftDisplay(shiftPart));
+      gapRows += "<tr><td style='padding:6px 12px;border:1px solid #ddd'>" + dateStr + "</td>" +
+        "<td style='padding:6px 12px;border:1px solid #ddd'>" + g.workshop + "</td>" +
+        "<td style='padding:6px 12px;border:1px solid #ddd'>" + _pd_shiftDisplay(shiftPart) + "</td></tr>";
     });
 
-    var dateList = Object.keys(dateGroups).sort();
-    var gapRows = "";
-    dateList.forEach(function(d) {
-      gapRows += "<tr><td style='padding:6px 12px;border:1px solid #ddd'>" + d + "</td>" +
-        "<td style='padding:6px 12px;border:1px solid #ddd'>" + dateGroups[d].join("、") + "</td></tr>";
-    });
+    var sheetUrl = "https://docs.google.com/spreadsheets/d/" + _pd_TARGET_SHEET_ID;
 
     var html = '<div style="font-family:Arial,\'Microsoft YaHei\',sans-serif;max-width:600px">' +
       '<h3 style="color:#E60012">⚠ 注塑工序人员排班缺失提醒</h3>' +
       '<p>以下日期班次已安排<strong>开机</strong>，但<strong>人员排班尚未填写</strong>，请及时处理：</p>' +
+      '<p style="font-size:13px">📊 <a href="' + sheetUrl + '" style="color:#E60012">打开排班表</a></p>' +
       '<table style="border-collapse:collapse;width:100%;font-size:14px">' +
-      '<tr style="background:#E60012;color:white"><th style="padding:8px;text-align:left">日期</th><th style="padding:8px;text-align:left">缺失班次</th></tr>' +
+      '<tr style="background:#E60012;color:white"><th style="padding:8px;text-align:left">日期</th><th style="padding:8px;text-align:left">车间</th><th style="padding:8px;text-align:left">班次</th></tr>' +
       gapRows +
       '</table>' +
       '<p style="color:#888;font-size:12px;margin-top:16px">此邮件由 工时数据汇总系统 自动发送</p>' +
