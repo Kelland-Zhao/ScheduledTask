@@ -1,8 +1,9 @@
-// 工时数据汇总（TB1+TB2 → MasterData，合并实际工时）
+// V20260613.02 — 工时数据汇总（TB1+TB2 → MasterData，合并实际工时）
 // 入口：aggregateTB1TB2ToMasterData（每日 09:20 定时 or 手动）
 // 数据源：_pd_TARGET_SHEET_ID Sheets: TB1, TB2
 //         _pd_ATTENDANCE_SHEET_ID Sheet: 跟班考勤SUM
 // 目标表：_pd_TARGET_SHEET_ID Sheet: MasterData
+// 新增：开机数>0但人员排班缺失时，邮件提醒李华、丁志伟（CC直线上级+上级的上级）
 
 const _pd_ATTENDANCE_SHEET_ID = "1ZYh71zxJnBj8v5FlEghAPHZyJ96vyD6hB7UVDj0ebo8";
 
@@ -18,12 +19,25 @@ function aggregateTB1TB2ToMasterData(e) {
     const tb2Sheet = targetSpreadsheet.getSheetByName("TB2");
     const masterDataSheet = targetSpreadsheet.getSheetByName("MasterData");
 
-    const tb1Data = _pd_convertSheetToMasterData(tb1Sheet, "TB1");
-    const tb2Data = _pd_convertSheetToMasterData(tb2Sheet, "TB2");
+    const gaps = [];
+    const tb1Data = _pd_convertSheetToMasterData(tb1Sheet, "TB1", gaps);
+    const tb2Data = _pd_convertSheetToMasterData(tb2Sheet, "TB2", gaps);
     logDetails.push(`TB1: ${tb1Data.length}条, TB2: ${tb2Data.length}条`);
 
+    // 开机数>0 但人员排班缺失 → 发送提醒邮件
+    if (gaps.length > 0) {
+      _pd_sendPersonnelGapAlert(gaps, trigger);
+      logDetails.push(`排班缺失提醒: ${gaps.length}个班次`);
+    }
+
     const allData = tb1Data.concat(tb2Data);
-    if (allData.length === 0) throw new Error("没有有效数据需要同步");
+    if (allData.length === 0) {
+      if (gaps.length > 0) {
+        writeLog("aggregateTB1TB2ToMasterData", "跳过", "开机数>0但无人员排班（已发送提醒）", trigger, "");
+        return;
+      }
+      throw new Error("没有有效数据需要同步");
+    }
 
     const actualManhourMap = _pd_getActualManhourData();
     logDetails.push(`实际工时记录: ${actualManhourMap.size}条`);
@@ -45,7 +59,7 @@ function aggregateTB1TB2ToMasterData(e) {
 }
 
 // ========== 辅助函数 ==========
-function _pd_convertSheetToMasterData(sheet, workshop) {
+function _pd_convertSheetToMasterData(sheet, workshop, gaps) {
   const result = [];
   const lastRow = sheet.getLastRow();
   const lastCol = sheet.getLastColumn();
@@ -63,11 +77,18 @@ function _pd_convertSheetToMasterData(sheet, workshop) {
     const monthStr = _pd_extractMonth(String(dateShift));
     const weekNum = _pd_calculateWeek(String(dateShift));
 
+    let hasPersonnel = false;
     for (let rowIndex = 2; rowIndex < allData.length; rowIndex++) {
       const personName = allData[rowIndex][0];
       const manhour = allData[rowIndex][colIndex];
       if (!personName || !manhour || Number(manhour) <= 0) continue;
+      hasPersonnel = true;
       result.push([dateShift, workshop, operatingQty, personName, manhour, monthStr, weekNum, ""]);
+    }
+
+    // 开机数>0 但无任何人员填写工时 → 记录排班缺失
+    if (!hasPersonnel && gaps) {
+      gaps.push({ workshop: workshop, dateShift: String(dateShift) });
     }
   }
   return result;
@@ -178,4 +199,129 @@ function _pd_incrementalUpdateMasterData(sheet, data) {
     "姓名 / Name", "安排工时 / Scheduling Manhour", "月份 / Month", "周 / Week",
     "实际工时 / Actual Manhour"
   ]]);
+}
+
+// ========== 排班缺失提醒 ==========
+/** 构建 userID 查找表：name→{email,lineMgr} 和 email→{name,lineMgr} */
+function _pd_buildUserLookup() {
+  const map = { nameMap: {}, emailMap: {} };
+  try {
+    const sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
+    if (!sheet) return map;
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 3) return map;
+
+    const data = sheet.getRange(1, 1, lastRow, 61).getValues();
+    for (let i = 2; i < data.length; i++) {
+      const row = data[i];
+      const name = String(row[1] || "").trim();
+      const email = String(row[9] || "").trim().toLowerCase();
+      const lineMgr = String(row[60] || "").trim().toLowerCase();
+      if (name && email) {
+        map.nameMap[name] = { email: email, lineMgr: lineMgr };
+      }
+      if (email) {
+        map.emailMap[email] = { name: name, lineMgr: lineMgr };
+      }
+    }
+  } catch (err) {
+    console.error("_pd_buildUserLookup 失败: " + err.message);
+  }
+  return map;
+}
+
+/** 提取日期部分 "2026.06.14_1夜" → "2026.06.14" */
+function _pd_extractDateFromShift(dateShift) {
+  var idx = String(dateShift).lastIndexOf("_");
+  return idx >= 0 ? String(dateShift).substring(0, idx) : String(dateShift);
+}
+
+/** 提取班次中文显示 "1夜"→"夜班" "2早"→"早班" "3中"→"中班" */
+function _pd_shiftDisplay(shiftPart) {
+  var map = { "1夜": "夜班", "2早": "早班", "3中": "中班" };
+  return map[shiftPart] || shiftPart;
+}
+
+/** 发送排班缺失提醒邮件 */
+function _pd_sendPersonnelGapAlert(gaps, trigger) {
+  try {
+    const { nameMap, emailMap } = _pd_buildUserLookup();
+
+    // 目标收件人
+    const targetNames = ["李华", "丁志伟"];
+    const toEmails = [];
+    const ccSet = {};
+
+    targetNames.forEach(function(name) {
+      const user = nameMap[name];
+      if (!user || !user.email) {
+        console.warn("userID 中未找到: " + name);
+        return;
+      }
+      toEmails.push(user.email);
+
+      // 直线上级 (BI列)
+      if (user.lineMgr && !ccSet[user.lineMgr]) {
+        ccSet[user.lineMgr] = true;
+      }
+
+      // 直线上级的直线上级
+      const supData = emailMap[user.lineMgr];
+      if (supData && supData.lineMgr && !ccSet[supData.lineMgr]) {
+        ccSet[supData.lineMgr] = true;
+      }
+    });
+
+    if (toEmails.length === 0) {
+      console.warn("未找到李华或丁志伟的邮箱，跳过排班缺失提醒");
+      return;
+    }
+
+    // 去掉和 TO 重复的 CC
+    toEmails.forEach(function(e) { delete ccSet[e]; });
+    var ccEmails = Object.keys(ccSet);
+
+    // 按日期分组 gaps
+    var dateGroups = {};
+    gaps.forEach(function(g) {
+      var dateStr = _pd_extractDateFromShift(g.dateShift);
+      var shiftPart = _pd_splitShift(g.dateShift);
+      if (!dateGroups[dateStr]) dateGroups[dateStr] = [];
+      dateGroups[dateStr].push(g.workshop + " " + _pd_shiftDisplay(shiftPart));
+    });
+
+    var dateList = Object.keys(dateGroups).sort();
+    var gapRows = "";
+    dateList.forEach(function(d) {
+      gapRows += "<tr><td style='padding:6px 12px;border:1px solid #ddd'>" + d + "</td>" +
+        "<td style='padding:6px 12px;border:1px solid #ddd'>" + dateGroups[d].join("、") + "</td></tr>";
+    });
+
+    var html = '<div style="font-family:Arial,\'Microsoft YaHei\',sans-serif;max-width:600px">' +
+      '<h3 style="color:#E60012">⚠ 注塑工序人员排班缺失提醒</h3>' +
+      '<p>以下日期班次已安排<strong>开机</strong>，但<strong>人员排班尚未填写</strong>，请及时处理：</p>' +
+      '<table style="border-collapse:collapse;width:100%;font-size:14px">' +
+      '<tr style="background:#E60012;color:white"><th style="padding:8px;text-align:left">日期</th><th style="padding:8px;text-align:left">缺失班次</th></tr>' +
+      gapRows +
+      '</table>' +
+      '<p style="color:#888;font-size:12px;margin-top:16px">此邮件由 工时数据汇总系统 自动发送</p>' +
+      '</div>';
+
+    var subject = "【排班缺失提醒】 注塑工序人员排班未填写";
+    var options = { htmlBody: html, name: "工时数据汇总系统" };
+    if (ccEmails.length > 0) options.cc = ccEmails.join(",");
+
+    GmailApp.sendEmail(toEmails.join(","), subject, "", options);
+    console.log("排班缺失提醒已发送 → TO: " + toEmails.join(",") + " CC: " + ccEmails.join(","));
+
+  } catch (err) {
+    console.error("发送排班缺失提醒失败: " + err.message);
+    try { writeLog("_pd_sendPersonnelGapAlert", "失败", err.message, trigger, ""); } catch (e2) {}
+  }
+}
+
+/** 从日期班次提取班次部分 */
+function _pd_splitShift(dateShift) {
+  var idx = String(dateShift).lastIndexOf("_");
+  return idx >= 0 ? String(dateShift).substring(idx + 1) : "";
 }
