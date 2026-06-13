@@ -265,13 +265,13 @@ function _dr_buildWorkshopTable(workshopName, shiftData) {
     var machines = d.machines || 0;
     var people = d.people || 0;
     var manhours = Math.round((d.manhours || 0) * 10) / 10;
+    // 开机数>0 但无人排班 → 标记预警
+    var warn = machines > 0 && people === 0;
 
-    rows.push([
-      _dr_SHIFT_DISPLAY[sh],
-      machines,
-      people,
-      manhours
-    ]);
+    rows.push({
+      cells: [ _dr_SHIFT_DISPLAY[sh], machines, people, manhours ],
+      warn: warn
+    });
 
     totalMachines += machines;
     totalPeople += people;
@@ -279,12 +279,15 @@ function _dr_buildWorkshopTable(workshopName, shiftData) {
   });
 
   // 合计行
-  rows.push([
-    '<b>合计</b>',
-    '<b>' + totalMachines + '</b>',
-    '<b>' + totalPeople + '</b>',
-    '<b>' + Math.round(totalManhours * 10) / 10 + '</b>'
-  ]);
+  rows.push({
+    cells: [
+      '<b>合计</b>',
+      '<b>' + totalMachines + '</b>',
+      '<b>' + totalPeople + '</b>',
+      '<b>' + Math.round(totalManhours * 10) / 10 + '</b>'
+    ],
+    isTotal: true
+  });
 
   var html = '<div style="background:#FFF9F9;border:1px solid #f0d0d0;border-radius:4px;overflow:hidden">';
 
@@ -300,14 +303,20 @@ function _dr_buildWorkshopTable(workshopName, shiftData) {
   html += '</tr>';
 
   for (var i = 0; i < rows.length; i++) {
-    var isTotal = (i === rows.length - 1);
+    var row = rows[i];
+    var isTotal = row.isTotal;
     var bg = isTotal ? "#fff3f3" : "#ffffff";
     var fontWeight = isTotal ? "font-weight:bold;" : "";
     var borderTop = isTotal ? "border-top:2px solid #E60012;" : "";
     html += '<tr style="background:' + bg + ';' + fontWeight + borderTop + '">';
-    for (var j = 0; j < rows[i].length; j++) {
+    for (var j = 0; j < row.cells.length; j++) {
       var cellColor = isTotal ? "color:#E60012;" : "";
-      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5;' + cellColor + '">' + (typeof rows[i][j] === 'string' ? rows[i][j] : escapeHtml(String(rows[i][j]))) + '</td>';
+      // 开机数>0 但无人排班 → 上班人数(j=2)和合计工时(j=3)标黄预警
+      var cellBg = "";
+      if (!isTotal && row.warn && (j === 2 || j === 3)) {
+        cellBg = "background:#FFF3CD;";
+      }
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5;' + cellColor + cellBg + '">' + (typeof row.cells[j] === 'string' ? row.cells[j] : escapeHtml(String(row.cells[j]))) + '</td>';
     }
     html += '</tr>';
   }
