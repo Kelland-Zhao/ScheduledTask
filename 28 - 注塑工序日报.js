@@ -56,11 +56,14 @@ function sendDailyProcessReport(e) {
       });
     });
 
-    // 4. 构建邮件 HTML
-    var todayStr = formatVariableAsDate(new Date());
-    var html = _dr_buildEmailHtml(summary, tomorrowDisplay, todayStr);
+    // 4. 备件信息
+    var sparePartsInfo = _dr_getSparePartsInfo();
 
-    // 5. 获取收件人
+    // 5. 构建邮件 HTML
+    var todayStr = formatVariableAsDate(new Date());
+    var html = _dr_buildEmailHtml(summary, sparePartsInfo, tomorrowDisplay, todayStr);
+
+    // 6. 获取收件人
     var recipients = _dr_TEST_MODE ? [_dr_TEST_EMAIL] : _dr_getRecipients();
 
     if (recipients.length > 0) {
@@ -184,6 +187,223 @@ function _dr_splitShift(dateShift) {
   return idx >= 0 ? dateShift.substring(idx + 1) : "";
 }
 
+// ========== 备件信息 ==========
+var _dr_SPAREPARTS_SHEET_ID = "1hVHBdnK_EVSMW54meCpx91rooIZ6Y8vICQzG7txVHGs";
+
+/** 从备件管理表读取备件信息数据 */
+function _dr_getSparePartsInfo() {
+  var result = {
+    totalValue: 0,
+    dataDate: "",
+    prevDate: "",
+    newArrivals: [],
+    offlineNoStock: []
+  };
+
+  try {
+    var ss = SpreadsheetApp.openById(_dr_SPAREPARTS_SHEET_ID);
+
+    // 1. 读取备件基础信息
+    var biSheet = ss.getSheetByName("备件基础信息");
+    if (!biSheet || biSheet.getLastRow() <= 1) return result;
+    var biData = biSheet.getRange(2, 1, biSheet.getLastRow() - 1, 8).getValues();
+
+    var totalValue = 0;
+    var matValueMap = {}; // 物料→库存金额
+    biData.forEach(function(row) {
+      var mat = String(row[0] || "").trim();
+      if (!mat) return;
+      var stock = Number(row[4]) || 0;
+      var value = Number(row[7]) || 0;
+      totalValue += value;
+      matValueMap[mat] = value;
+
+      // Offline控制=Y 且 库存=0
+      var offlineControl = String(row[5] || "").trim().toUpperCase();
+      if (offlineControl === "Y" && stock === 0) {
+        result.offlineNoStock.push({
+          material: mat,
+          description: String(row[1] || "").trim(),
+          machineModel: String(row[2] || "").trim(),
+          safetyStock: Number(row[3]) || 0
+        });
+      }
+    });
+    result.totalValue = Math.round(totalValue * 100) / 100;
+
+    // 2. 读取 MasterData 获取最新日期和前一天对比
+    var mdSheet = ss.getSheetByName("MasterData");
+    if (!mdSheet || mdSheet.getLastRow() <= 1) return result;
+    var mdData = mdSheet.getRange(2, 1, mdSheet.getLastRow() - 1, 5).getValues();
+
+    // 收集各日期各物料的库存（取当日最新记录）
+    var dateMap = {};
+    mdData.forEach(function(row) {
+      var mat = String(row[0] || "").trim();
+      if (!mat || mat.charAt(0).toUpperCase() === "Z") return;
+      var desc = String(row[1] || "").trim();
+      var stock = Number(row[2]) || 0;
+      var dateVal = row[4];
+      if (!dateVal) return;
+      var dateStr = dateVal instanceof Date
+        ? Utilities.formatDate(dateVal, currentTimeZone, "yyyy-MM-dd")
+        : String(dateVal).trim();
+      if (!dateMap[dateStr]) dateMap[dateStr] = {};
+      if (!dateMap[dateStr][mat] || dateVal > dateMap[dateStr][mat]._rawDate) {
+        dateMap[dateStr][mat] = { desc: desc, stock: stock, _rawDate: dateVal };
+      }
+    });
+
+    // 排序日期取最近2天
+    var dates = Object.keys(dateMap).sort().reverse();
+    result.dataDate = dates[0] || "";
+
+    if (dates.length >= 2) {
+      result.prevDate = dates[1];
+      _dr_compareDates(dateMap, dates[0], dates[1], matValueMap, result.newArrivals);
+    }
+
+    result.newArrivals.sort(function(a, b) { return b.value - a.value; });
+    result.offlineNoStock.sort(function(a, b) { return a.material.localeCompare(b.material); });
+
+  } catch (err) {
+    console.error("读取备件信息失败: " + err.message);
+  }
+
+  return result;
+}
+
+/** 对比两天 MasterData，找出库存增加的物料，写入 targetArr */
+function _dr_compareDates(dateMap, newDate, oldDate, matValueMap, targetArr) {
+  var newMap = dateMap[newDate];
+  var oldMap = dateMap[oldDate];
+  Object.keys(newMap).forEach(function(mat) {
+    var newStock = newMap[mat].stock;
+    var oldStock = (oldMap[mat] && oldMap[mat].stock) || 0;
+    if (newStock > oldStock) {
+      targetArr.push({
+        material: mat,
+        description: newMap[mat].desc,
+        latestStock: newStock,
+        prevStock: oldStock,
+        increase: newStock - oldStock,
+        value: matValueMap[mat] || 0
+      });
+    }
+  });
+}
+
+/** 构建单组新到货表格 */
+function _dr_buildNewArrivalTable(title, newDate, oldDate, arrivals) {
+  var html = '';
+  html += '<h4 style="color:#555;margin-top:16px;margin-bottom:8px;font-size:15px">' + escapeHtml(title) + '（' + escapeHtml(newDate) + ' vs ' + escapeHtml(oldDate) + '）</h4>';
+
+  if (arrivals.length > 0) {
+    html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;font-size:13px;border-collapse:collapse">';
+    html += '<tr style="background:#fde0e0;color:#333;font-weight:bold">';
+    ["物料编码", "物料描述", "前日库存", "当前库存", "增加", "库存金额"].forEach(function(h) {
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0">' + escapeHtml(h) + '</td>';
+    });
+    html += '</tr>';
+
+    var stPrevStock = 0, stLatestStock = 0, stIncrease = 0, stValue = 0;
+    arrivals.forEach(function(item, idx) {
+      stPrevStock += item.prevStock;
+      stLatestStock += item.latestStock;
+      stIncrease += item.increase;
+      stValue += item.value;
+
+      var bg = idx % 2 === 0 ? "#ffffff" : "#fff8f8";
+      html += '<tr style="background:' + bg + '">';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">' + escapeHtml(item.material) + '</td>';
+      html += '<td style="padding:8px;text-align:left;border-bottom:1px solid #f5f5f5">' + escapeHtml(item.description) + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">' + item.prevStock + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">' + item.latestStock + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5;color:#E60012;font-weight:bold">+' + item.increase + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">¥' + _dr_formatMoney(item.value) + '</td>';
+      html += '</tr>';
+    });
+
+    // 小计行
+    html += '<tr style="background:#fff3f3;border-top:2px solid #E60012;font-weight:bold">';
+    html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0" colspan="2">小计</td>';
+    html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0;color:#E60012">' + stPrevStock + '</td>';
+    html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0;color:#E60012">' + stLatestStock + '</td>';
+    html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0;color:#E60012">+' + stIncrease + '</td>';
+    html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0;color:#E60012">¥' + _dr_formatMoney(stValue) + '</td>';
+    html += '</tr>';
+
+    html += '</table>';
+  } else {
+    html += '<p style="color:#999;font-size:13px;margin:8px 0">无新增到货</p>';
+  }
+
+  return html;
+}
+
+/** 构建备件信息 HTML 块 */
+function _dr_buildSparePartsSection(sp) {
+  var html = '';
+
+  // ===== 第二部分：备件信息 =====
+  html += '<h3 style="color:#333;border-bottom:2px solid #E60012;padding-bottom:8px;margin-top:28px;font-size:17px">二、备件信息</h3>';
+
+  // 2.1 库存总览
+  html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;margin-top:12px"><tr>';
+
+  // 左：库存总金额卡片
+  html += '<td style="width:50%;vertical-align:top;padding-right:10px">';
+  html += '<div style="background:#FFF9F9;border:1px solid #f0d0d0;border-radius:4px;padding:16px;text-align:center">';
+  html += '<p style="margin:0;color:#888;font-size:12px">库存总金额</p>';
+  html += '<p style="margin:8px 0 0;font-size:28px;font-weight:bold;color:#E60012">¥' + _dr_formatMoney(sp.totalValue) + '</p>';
+  html += '</div></td>';
+
+  // 右：数据日期卡片
+  html += '<td style="width:50%;vertical-align:top;padding-left:10px">';
+  html += '<div style="background:#FFF9F9;border:1px solid #f0d0d0;border-radius:4px;padding:16px;text-align:center">';
+  html += '<p style="margin:0;color:#888;font-size:12px">数据日期</p>';
+  html += '<p style="margin:8px 0 0;font-size:28px;font-weight:bold;color:#333">' + escapeHtml(sp.dataDate || "-") + '</p>';
+  html += '</div></td>';
+
+  html += '</tr></table>';
+
+  // 2.2 VS前一天新到备件
+  html += _dr_buildNewArrivalTable("VS前一天新到备件", sp.dataDate, sp.prevDate, sp.newArrivals);
+
+  // 2.3 建议Offline控制但无库存
+  html += '<h4 style="color:#555;margin-top:20px;margin-bottom:8px;font-size:15px">建议 Offline 控制但无库存的备件</h4>';
+  if (sp.offlineNoStock.length > 0) {
+    html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;font-size:13px;border-collapse:collapse">';
+    html += '<tr style="background:#fde0e0;color:#333;font-weight:bold">';
+    ["物料编码", "物料描述", "机型", "安全库存"].forEach(function(h) {
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0">' + escapeHtml(h) + '</td>';
+    });
+    html += '</tr>';
+    sp.offlineNoStock.forEach(function(item, idx) {
+      var bg = "#FFC107"; // 全部高亮黄色
+      html += '<tr style="background:' + bg + ';font-weight:bold">';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #e6ac00">' + escapeHtml(item.material) + '</td>';
+      html += '<td style="padding:8px;text-align:left;border-bottom:1px solid #e6ac00">' + escapeHtml(item.description) + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #e6ac00">' + escapeHtml(item.machineModel) + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #e6ac00">' + item.safetyStock + '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+  } else {
+    html += '<p style="color:#999;font-size:13px;margin:8px 0">无</p>';
+  }
+
+  return html;
+}
+
+/** 金额格式化（#,###.## 无小数则省略） */
+function _dr_formatMoney(val) {
+  var parts = val.toFixed(2).split(".");
+  var intPart = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  var decPart = parts[1];
+  return decPart === "00" ? intPart : intPart + "." + decPart;
+}
+
 // ========== 收件人 ==========
 /** 从 userID 表读取 O列=INJ 且 P列=S&C 的邮箱 */
 function _dr_getRecipients() {
@@ -215,7 +435,7 @@ function _dr_getRecipients() {
 }
 
 // ========== 邮件 HTML ==========
-function _dr_buildEmailHtml(summary, tomorrowDisplay, todayStr) {
+function _dr_buildEmailHtml(summary, spareParts, tomorrowDisplay, todayStr) {
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
   html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:960px;margin:0 auto">';
 
@@ -246,6 +466,9 @@ function _dr_buildEmailHtml(summary, tomorrowDisplay, todayStr) {
   html += _dr_buildWorkshopTable("TB2", summary["TB2"]);
   html += '</td>';
   html += '</tr></table>';
+
+  // ===== 第二部分：备件信息 =====
+  html += _dr_buildSparePartsSection(spareParts);
 
   html += '<p style="color:#bdc3c7;font-size:11px;margin-top:28px">此邮件由 工序日报系统 自动发送</p>';
   html += '</div></div></body></html>';
