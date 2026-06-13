@@ -314,7 +314,7 @@ function _dr_buildWorkshopTable(workshopName, shiftData) {
       // 开机数>0 但无人排班 → 上班人数(j=2)和合计工时(j=3)标黄预警
       var cellBg = "";
       if (!isTotal && row.warn && (j === 2 || j === 3)) {
-        cellBg = "background:#FFF3CD;";
+        cellBg = "background:#FFC107;";
       }
       html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5;' + cellColor + cellBg + '">' + (typeof row.cells[j] === 'string' ? row.cells[j] : escapeHtml(String(row.cells[j]))) + '</td>';
     }
