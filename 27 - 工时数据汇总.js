@@ -301,7 +301,7 @@ function _pd_sendPersonnelGapAlert(gaps, trigger) {
     var html = '<div style="font-family:Arial,\'Microsoft YaHei\',sans-serif;max-width:600px">' +
       '<h3 style="color:#E60012">⚠ 注塑工序人员排班缺失提醒</h3>' +
       '<p>以下日期班次已安排<strong>开机</strong>，但<strong>人员排班尚未填写</strong>，请及时处理：</p>' +
-      '<p style="font-size:13px">📊 <a href="' + sheetUrl + '" style="color:#E60012">打开排班表</a></p>' +
+      '<p style="font-size:13px"><a href="' + sheetUrl + '" style="color:#E60012;font-weight:bold">打开排班表</a></p>' +
       '<table style="border-collapse:collapse;width:100%;font-size:14px">' +
       '<tr style="background:#E60012;color:white"><th style="padding:8px;text-align:left">日期</th><th style="padding:8px;text-align:left">车间</th><th style="padding:8px;text-align:left">班次</th></tr>' +
       gapRows +
