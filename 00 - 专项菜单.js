@@ -8,6 +8,11 @@ const sbnTimingSet = saas.getSheetByName("定时设置");
 const sbnLog = saas.getSheetByName("Log");
 const currentTimeZone = saas.getSpreadsheetTimeZone();
 
+// ========== IoT 报警监控（29/30号脚本）==========
+const ALERT_SPREADSHEET_ID = "1FtljG58B1uzcgNU_vKEYUSeW39X23ljUYtngEYmWl_A";
+const ALERT_WECHAT_WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=fbbae99b-8237-4ba9-beb2-27b6d8845f06";
+const ALERT_MANAGER_EMAIL = "kelland_zhao@colpal.com";
+
 // ========== SmartMeeting 业务数据 ==========
 const SMARTMEETING_SPREADSHEET_ID = "1Rmf_IJMHNzXv0cfm5AMwZrjfSii955j-vAEGOnA7KP8";
 const SMARTMEETING_SHEET_NAME = "会议记录";
