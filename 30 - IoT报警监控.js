@@ -35,6 +35,19 @@ function getAlertSheetsConfig() {
       typeCol:        8,   // 点位
     },
     {
+      label:            '热流道温控箱"跟从"报警',
+      sheet:            ss.getSheetByName("IOT温控箱跟从邮件反馈格式"),
+      totalCols:        13,
+      dateCol:          4,   // 跟从开始时间（"yyyy-MM-dd HH:mm:ss"）
+      timeCol:          -1,  // datetime 合并在 dateCol 中
+      dateIsDatetime:   true,
+      statusCol:        8,   // 状态（I列）
+      workshopCol:      -1,
+      defaultWorkshop:  'TB2',
+      machineCol:       2,   // 机台号
+      typeCol:          3,   // 点位
+    },
+    {
       label:          'Full Opera机台炮筒温度报警',
       sheet:          ss.getSheetByName("Opera炮筒温度邮件反馈格式"),
       totalCols:      20,
