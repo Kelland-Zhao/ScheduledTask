@@ -1,6 +1,6 @@
 // V20260608.1 — 故障报告跟进项提醒
 // 功能：每日检查 Failure_Report_followup 表，提醒责任人（临期/逾期）和验证人（待验证）
-// 依赖：23 - 故障报告周报.js（共享函数：getUserIDLookupMaps, extractNameFromPersonField, extractEmailFromPersonField）
+// 依赖：22 - 故障报告周报.js（共享函数：getUserIDLookupMaps, extractNameFromPersonField, extractEmailFromPersonField）
 
 // ========== 管理员邮箱（从 userID BH列"项目跟进权限管理"读取） ==========
 

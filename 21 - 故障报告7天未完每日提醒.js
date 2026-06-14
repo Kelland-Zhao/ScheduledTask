@@ -1,6 +1,6 @@
 // V20260608.1 — 故障报告7天未完每日提醒
 // 功能：每日检测超期>=7天且未上传的故障报告，按工序分组发送紧急提醒
-// 依赖：23 - 故障报告周报.js（共享函数：getOverdueFailureReportData, getUserIDLookupMaps 等）
+// 依赖：22 - 故障报告周报.js（共享函数：getOverdueFailureReportData, getUserIDLookupMaps 等）
 
 // ========== 主函数：每日超期故障报告提醒 ==========
 
