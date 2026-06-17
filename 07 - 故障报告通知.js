@@ -179,6 +179,11 @@ function filterQualifiedFaultItems(faultItems) {
         // 排除"转规格"问题
         var problemDesc = String(item.problemDesc || '');
         if (problemDesc.indexOf('转规格') !== -1) return false;
+        // TF 额外排除处理过程中含"转规格"
+        if (item.processType === 'TF') {
+          var processDesc = String(item.process || '');
+          if (processDesc.indexOf('转规格') !== -1) return false;
+        }
       }
 
       return true;
