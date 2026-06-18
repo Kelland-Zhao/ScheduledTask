@@ -27,6 +27,10 @@ const FAULT_CONFIG = {
   MAX_ITEMS_IN_EMAIL: 20
 };
 
+// 故障报告数据库（待审核数据源）
+const FR_DATABASE_ID = '1YAPdZKVEOHgCGIJRQwWTQBmwaWIS4yd1SQKJJfRCtAU';
+const FR_DATABASE_SHEET = 'Failure_Database';
+
 // ========== 故障检测主函数 ==========
 
 /** 主函数：故障检测和通知发送（定时 e 存在 / 手动 e 为 undefined） */
@@ -229,12 +233,82 @@ function getNotificationConfig() {
   }
 }
 
+// ========== 待审核故障报告 ==========
+
+function _getPendingReviewReports() {
+  try {
+    var sheet = SpreadsheetApp.openById(FR_DATABASE_ID).getSheetByName(FR_DATABASE_SHEET);
+    if (!sheet) return [];
+    var data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return [];
+    var headers = data[0];
+    var idxReviewStatus = headers.indexOf('审核状态 / Review Status');
+    if (idxReviewStatus < 0) return [];
+    var reports = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      if (String(row[idxReviewStatus] || '').trim() !== '主管审核中') continue;
+      reports.push({
+        id: row[headers.indexOf('编号')] || '',
+        machineId: row[headers.indexOf('机台号')] || '',
+        description: row[headers.indexOf('问题描述')] || '',
+        process: row[headers.indexOf('工序')] || '',
+        reportNumber: row[headers.indexOf('故障报告编号')] || '',
+        owner: String(row[headers.indexOf('责任人')] || '').trim(),
+        reviewer: String(row[headers.indexOf('审核人 / Reviewed By')] || '').trim(),
+        reviewStatus: '主管审核中'
+      });
+    }
+    console.log('待审核故障报告: ' + reports.length + ' 条');
+    return reports;
+  } catch (e) {
+    console.error('读取待审核报告失败: ' + e.message);
+    return [];
+  }
+}
+
+function _getSupervisorMap() {
+  var map = {};
+  try {
+    var sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
+    if (!sheet) return map;
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 3) return map;
+    var headers = data[1];
+    var idxName = headers.indexOf('NAME');
+    var idxSupervisor = 60;
+    if (idxName < 0) return map;
+    for (var i = 2; i < data.length; i++) {
+      var name = String(data[i][idxName] || '').trim();
+      var sv = String(data[i][idxSupervisor] || '').trim();
+      if (name && sv) map[name] = sv;
+    }
+    console.log('Supervisor映射: ' + Object.keys(map).length + ' 条');
+  } catch (e) {
+    console.error('读取Supervisor映射失败: ' + e.message);
+  }
+  return map;
+}
+
 // ========== 邮件发送 ==========
 
 function sendFaultNotifications(faultItems, notificationConfig, trigger) {
   var sentCount = 0;
 
   try {
+    // 获取待审核报告
+    var pendingReviews = _getPendingReviewReports();
+    var supervisorMap = _getSupervisorMap();
+
+    // 待审核报告按工序分组
+    var pendingByProcess = {};
+    pendingReviews.forEach(function(r) {
+      var p = r.process;
+      if (!p) return;
+      if (!pendingByProcess[p]) pendingByProcess[p] = [];
+      pendingByProcess[p].push(r);
+    });
+
     var groupedItems = {};
     faultItems.forEach(function(item) {
       var pt = item.processType;
@@ -242,18 +316,34 @@ function sendFaultNotifications(faultItems, notificationConfig, trigger) {
       groupedItems[pt].push(item);
     });
 
-    Object.keys(groupedItems).forEach(function(processType) {
-      var items = groupedItems[processType];
+    // 合并所有出现的工序
+    var allProcesses = {};
+    Object.keys(groupedItems).forEach(function(p) { allProcesses[p] = true; });
+    Object.keys(pendingByProcess).forEach(function(p) { allProcesses[p] = true; });
+
+    Object.keys(allProcesses).forEach(function(processType) {
+      var items = groupedItems[processType] || [];
+      var pendingForProcess = pendingByProcess[processType] || [];
+
       // 按提交日期降序排列，最近提交的优先展示
       items.sort(function(a, b) {
         var da = a.submitDate ? new Date(a.submitDate) : new Date(0);
         var db = b.submitDate ? new Date(b.submitDate) : new Date(0);
         return db - da;
       });
+
+      // 收集待审核报告的 supervisor 邮箱
+      var supervisorEmails = [];
+      var svSeen = {};
+      pendingForProcess.forEach(function(r) {
+        var sv = supervisorMap[r.owner];
+        if (sv && !svSeen[sv]) { svSeen[sv] = true; supervisorEmails.push(sv); }
+      });
+
       var recipients = getRecipients(processType, notificationConfig);
 
-      if (recipients.length > 0) {
-        var success = sendProcessEmail(processType, items, recipients, trigger);
+      if (recipients.length > 0 || pendingForProcess.length > 0) {
+        var success = sendProcessEmail(processType, items, recipients, trigger, pendingForProcess, supervisorEmails);
         if (success) sentCount++;
       }
     });
@@ -290,16 +380,24 @@ function getRecipients(processType, notificationConfig) {
   });
 }
 
-function sendProcessEmail(processType, faultItems, recipients, trigger) {
+function sendProcessEmail(processType, faultItems, recipients, trigger, pendingReviews, supervisorEmails) {
   try {
     var subject = generateEmailSubject(processType, faultItems);
-    var body = generateEmailBody(processType, faultItems);
+    var body = generateEmailBody(processType, faultItems, pendingReviews);
+
+    // CC: 管理员 + supervisor 邮箱
+    var ccList = [FAULT_CONFIG.ADMIN_EMAIL];
+    if (supervisorEmails && supervisorEmails.length > 0) {
+      ccList = ccList.concat(supervisorEmails);
+    }
+    var ccSeen = {};
+    var ccUnique = ccList.filter(function(e) { if (ccSeen[e]) return false; ccSeen[e] = true; return true; });
 
     recipients.forEach(function(recipient) {
       try {
-        GmailApp.sendEmail(recipient, subject, '', { htmlBody: body, cc: FAULT_CONFIG.ADMIN_EMAIL });
+        GmailApp.sendEmail(recipient, subject, '', { htmlBody: body, cc: ccUnique.join(',') });
         console.log('成功发送邮件给: ' + recipient);
-        writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，' + faultItems.length + ' 个故障条目', trigger, processType);
+        writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，故障=' + faultItems.length + ' 待审核=' + (pendingReviews ? pendingReviews.length : 0), trigger, processType);
       } catch (emailError) {
         console.error('发送邮件给 ' + recipient + ' 时出错:', emailError);
         writeLog('sendProcessEmail', '失败', '发送至 ' + recipient + ' 失败: ' + emailError.message, trigger, processType);
@@ -337,9 +435,10 @@ function getProcessDisplayNameEn(processType) {
 
 // ========== HTML 邮件正文 ==========
 
-function generateEmailBody(processType, faultItems) {
+function generateEmailBody(processType, faultItems, pendingReviews) {
   var processName = getProcessDisplayName(processType);
   var totalCount = faultItems.length;
+  var pendingCount = pendingReviews ? pendingReviews.length : 0;
   var maxShow = FAULT_CONFIG.MAX_ITEMS_IN_EMAIL;
   var displayItems = faultItems.slice(0, maxShow);
   var omittedCount = totalCount - maxShow;
@@ -350,21 +449,37 @@ function generateEmailBody(processType, faultItems) {
   html += '.header{background:linear-gradient(135deg,#E60012 0%,#FF6B6B 100%);color:white;padding:30px;border-radius:15px;text-align:center;margin-bottom:30px;box-shadow:0 8px 25px rgba(230,0,18,0.3)}';
   html += '.header h1{margin:0;font-size:28px;font-weight:600}';
   html += '.header p{margin:10px 0 0 0;font-size:16px;opacity:0.9}';
+  html += '.cards{display:flex;gap:20px;margin-bottom:25px;flex-wrap:wrap}';
+  html += '.card{flex:1;min-width:200px;background:white;border-radius:12px;padding:20px;text-align:center;box-shadow:0 4px 15px rgba(0,0,0,0.1)}';
+  html += '.card-value{font-size:36px;font-weight:bold}';
+  html += '.card-label{font-size:13px;color:#7f8c8d;margin-top:4px}';
   html += '.table-container{background:white;border-radius:15px;padding:25px;margin-bottom:25px;box-shadow:0 4px 20px rgba(0,0,0,0.1);overflow-x:auto}';
   html += '.fault-table{width:100%;border-collapse:collapse;margin-top:20px}';
   html += '.fault-table th{background:#E60012;color:white;padding:12px 8px;text-align:center;font-weight:600;border:1px solid #d32f2f;line-height:1.4}';
   html += '.fault-table td{padding:10px 8px;border:1px solid #ddd;text-align:left}';
   html += '.fault-table tr:nth-child(even){background-color:#f9f9f9}';
   html += '.fault-table tr:hover{background-color:#f0f0f0}';
+  html += '.review-table{width:100%;border-collapse:collapse;margin-top:20px}';
+  html += '.review-table th{background:#f39c12;color:white;padding:12px 8px;text-align:center;font-weight:600;border:1px solid #e67e22;line-height:1.4}';
+  html += '.review-table td{padding:10px 8px;border:1px solid #ddd;text-align:left}';
+  html += '.review-table tr:nth-child(even){background-color:#fffbf0}';
+  html += '.review-table tr:hover{background-color:#fff8e1}';
   html += '.repair-time{color:#E60012;font-weight:bold}';
   html += '.status-badge{background:#FF6B6B;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
+  html += '.review-badge{background:#f39c12;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
   html += '.footer{text-align:center;margin-top:40px;color:#666;font-size:12px}';
-  html += '@media(max-width:768px){.fault-table{font-size:12px}.fault-table th,.fault-table td{padding:6px 4px}}';
+  html += '@media(max-width:768px){.fault-table,.review-table{font-size:12px}.fault-table th,.fault-table td,.review-table th,.review-table td{padding:6px 4px}.cards{flex-direction:column}}';
   html += '</style></head><body><div class="container">';
 
   html += '<div class="header">';
   html += '<h1>【故障报告提醒】Fault Report Reminder</h1>';
-  html += '<p>' + processName + '工序发现' + totalCount + '个需要判定是否需要故障报告的问题<br>' + getProcessDisplayNameEn(processType) + ' process found ' + totalCount + ' issues</p>';
+  html += '<p>' + processName + '工序 / ' + getProcessDisplayNameEn(processType) + ' Process</p>';
+  html += '</div>';
+
+  // ===== 两张卡片 =====
+  html += '<div class="cards">';
+  html += '<div class="card"><div class="card-value" style="color:#E60012">' + totalCount + '</div><div class="card-label">待分配故障报告<br>Pending Fault Reports</div></div>';
+  html += '<div class="card"><div class="card-value" style="color:#f39c12">' + pendingCount + '</div><div class="card-label">待审核故障报告<br>Pending Review Reports</div></div>';
   html += '</div>';
 
   if (omittedCount > 0) {
@@ -398,6 +513,29 @@ function generateEmailBody(processType, faultItems) {
 
   if (omittedCount > 0) {
     html += '<p style="text-align:center;color:#E60012;font-weight:bold">（共 ' + totalCount + ' 条，以上为前 ' + maxShow + ' 条，剩余 ' + omittedCount + ' 条未展示）</p>';
+  }
+
+  // ===== 待审核故障报告 =====
+  if (pendingCount > 0) {
+    html += '<div class="table-container">';
+    html += '<h2 style="margin-top:0;color:#e67e22">【待审核故障报告】Pending Review Reports (' + pendingCount + '条)</h2>';
+    html += '<table class="review-table"><thead><tr>';
+    html += '<th>编号<br>ID</th><th>机台号<br>Machine No.</th><th>问题描述<br>Problem Description</th><th>责任人<br>Owner</th><th>故障报告编号<br>Report No.</th><th>审核人<br>Reviewer</th><th>状态<br>Status</th>';
+    html += '</tr></thead><tbody>';
+
+    pendingReviews.forEach(function(r) {
+      html += '<tr>';
+      html += '<td>' + (r.id || '-') + '</td>';
+      html += '<td>' + (r.machineId || '-') + '</td>';
+      html += '<td style="max-width:200px;word-wrap:break-word">' + (r.description || '-') + '</td>';
+      html += '<td>' + (r.owner || '-') + '</td>';
+      html += '<td>' + (r.reportNumber || '-') + '</td>';
+      html += '<td>' + (r.reviewer || '-') + '</td>';
+      html += '<td><span class="review-badge">' + r.reviewStatus + '</span></td>';
+      html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
   }
 
   html += '<div class="footer">';
