@@ -267,7 +267,7 @@ function _getPendingReviewReports() {
   }
 }
 
-function _getSupervisorMap() {
+function _getEmailToSupervisorMap() {
   var map = {};
   try {
     var sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
@@ -275,17 +275,45 @@ function _getSupervisorMap() {
     var data = sheet.getDataRange().getValues();
     if (data.length < 3) return map;
     var headers = data[1];
-    var idxName = headers.indexOf('NAME');
+    var idxEmail = headers.indexOf('GMail');
     var idxSupervisor = 60;
-    if (idxName < 0) return map;
+    if (idxEmail < 0) return map;
     for (var i = 2; i < data.length; i++) {
-      var name = String(data[i][idxName] || '').trim();
+      var email = String(data[i][idxEmail] || '').trim().toLowerCase();
       var sv = String(data[i][idxSupervisor] || '').trim();
-      if (name && sv) map[name] = sv;
+      if (email && sv) map[email] = sv;
     }
-    console.log('Supervisor映射: ' + Object.keys(map).length + ' 条');
+    console.log('Email→Supervisor映射: ' + Object.keys(map).length + ' 条');
   } catch (e) {
     console.error('读取Supervisor映射失败: ' + e.message);
+  }
+  return map;
+}
+
+function _extractEmail(field) {
+  if (!field) return '';
+  var m = String(field).match(/【(.+?)】/);
+  return m ? m[1].trim().toLowerCase() : '';
+}
+
+function _getEmailToNameMap() {
+  var map = {};
+  try {
+    var sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
+    if (!sheet) return map;
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 3) return map;
+    var headers = data[1];
+    var idxEmail = headers.indexOf('GMail');
+    var idxName = headers.indexOf('NAME');
+    if (idxEmail < 0 || idxName < 0) return map;
+    for (var i = 2; i < data.length; i++) {
+      var email = String(data[i][idxEmail] || '').trim().toLowerCase();
+      var name = String(data[i][idxName] || '').trim();
+      if (email && name) map[email] = name;
+    }
+  } catch (e) {
+    console.error('读取Name映射失败: ' + e.message);
   }
   return map;
 }
@@ -298,7 +326,8 @@ function sendFaultNotifications(faultItems, notificationConfig, trigger) {
   try {
     // 获取待审核报告
     var pendingReviews = _getPendingReviewReports();
-    var supervisorMap = _getSupervisorMap();
+    var supervisorMap = _getEmailToSupervisorMap();
+    var nameMap = _getEmailToNameMap();
 
     // 待审核报告按工序分组
     var pendingByProcess = {};
@@ -336,8 +365,12 @@ function sendFaultNotifications(faultItems, notificationConfig, trigger) {
       var supervisorEmails = [];
       var svSeen = {};
       pendingForProcess.forEach(function(r) {
-        var sv = supervisorMap[r.owner];
-        if (sv && !svSeen[sv]) { svSeen[sv] = true; supervisorEmails.push(sv); }
+        var ownerEmail = _extractEmail(r.owner);
+        var sv = supervisorMap[ownerEmail];
+        if (sv) {
+          if (!svSeen[sv]) { svSeen[sv] = true; supervisorEmails.push(sv); }
+          r._supervisorName = nameMap[sv] || '';
+        }
       });
 
       var recipients = getRecipients(processType, notificationConfig);
@@ -382,7 +415,7 @@ function getRecipients(processType, notificationConfig) {
 
 function sendProcessEmail(processType, faultItems, recipients, trigger, pendingReviews, supervisorEmails) {
   try {
-    var subject = generateEmailSubject(processType, faultItems);
+    var subject = generateEmailSubject(processType, faultItems, pendingReviews ? pendingReviews.length : 0);
     var body = generateEmailBody(processType, faultItems, pendingReviews);
 
     // CC: 管理员 + supervisor 邮箱
@@ -413,12 +446,14 @@ function sendProcessEmail(processType, faultItems, recipients, trigger, pendingR
   }
 }
 
-function generateEmailSubject(processType, faultItems) {
+function generateEmailSubject(processType, faultItems, pendingCount) {
   var displayName = getProcessDisplayName(processType);
-  var count = faultItems.length;
   var date = Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd');
-
-  return FAULT_CONFIG.EMAIL_SUBJECT_PREFIX + ' ' + date + ' - ' + displayName + '工序发现' + count + '个需要填写故障报告的问题';
+  var parts = [];
+  if (faultItems.length > 0) parts.push(faultItems.length + '个故障待判断');
+  if (pendingCount > 0) parts.push(pendingCount + '个故障报告待审核');
+  var detail = parts.length > 0 ? parts.join('和') : '无待处理项';
+  return FAULT_CONFIG.EMAIL_SUBJECT_PREFIX + ' ' + date + ' - ' + displayName + '工序发现' + detail;
 }
 
 // ========== 工序名称 ==========
@@ -530,7 +565,7 @@ function generateEmailBody(processType, faultItems, pendingReviews) {
       html += '<td style="max-width:200px;word-wrap:break-word">' + (r.description || '-') + '</td>';
       html += '<td>' + (r.owner || '-') + '</td>';
       html += '<td>' + (r.reportNumber || '-') + '</td>';
-      html += '<td>' + (r.reviewer || '-') + '</td>';
+      html += '<td>' + (r._supervisorName || r.reviewer || '-') + '</td>';
       html += '<td><span class="review-badge">' + r.reviewStatus + '</span></td>';
       html += '</tr>';
     });
