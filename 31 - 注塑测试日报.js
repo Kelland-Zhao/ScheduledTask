@@ -18,13 +18,46 @@ function _itr_normalizeDate(value) {
   }
 
   var text = String(value).trim();
-  var match = text.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
-  if (match) {
-    return match[1] + "-" +
-      ("0" + match[2]).slice(-2) + "-" +
-      ("0" + match[3]).slice(-2);
+  var dateMatch = text.match(/^(\d{4})([\/-])(\d{2})\2(\d{2})$/);
+  if (dateMatch) {
+    var year = Number(dateMatch[1]);
+    var month = Number(dateMatch[3]);
+    var day = Number(dateMatch[4]);
+    var calendarDate = new Date(Date.UTC(year, month - 1, day));
+    if (calendarDate.getUTCFullYear() !== year ||
+        calendarDate.getUTCMonth() !== month - 1 ||
+        calendarDate.getUTCDate() !== day) {
+      return "";
+    }
+    return dateMatch[1] + "-" + dateMatch[3] + "-" + dateMatch[4];
   }
 
+  var isoMatch = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/
+  );
+  if (!isoMatch) return "";
+
+  var isoYear = Number(isoMatch[1]);
+  var isoMonth = Number(isoMatch[2]);
+  var isoDay = Number(isoMatch[3]);
+  var isoHour = Number(isoMatch[4]);
+  var isoMinute = Number(isoMatch[5]);
+  var isoSecond = Number(isoMatch[6]);
+  var isoCalendarDate = new Date(Date.UTC(isoYear, isoMonth - 1, isoDay));
+  if (isoCalendarDate.getUTCFullYear() !== isoYear ||
+      isoCalendarDate.getUTCMonth() !== isoMonth - 1 ||
+      isoCalendarDate.getUTCDate() !== isoDay ||
+      isoHour > 23 ||
+      isoMinute > 59 ||
+      isoSecond > 59) {
+    return "";
+  }
+
+  var offset = isoMatch[7];
+  if (offset !== "Z") {
+    var offsetParts = offset.slice(1).split(":");
+    if (Number(offsetParts[0]) > 23 || Number(offsetParts[1]) > 59) return "";
+  }
   var parsed = new Date(text);
   return isNaN(parsed.getTime())
     ? ""
@@ -66,7 +99,19 @@ function _itr_uniqueEmails(emails) {
   var seen = {};
   return (emails || []).reduce(function (result, email) {
     var normalized = String(email || "").trim().toLowerCase();
-    var valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized);
+    var parts = normalized.split("@");
+    var local = parts[0] || "";
+    var domain = parts[1] || "";
+    var localValid = parts.length === 2 &&
+      /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+$/.test(local) &&
+      local.charAt(0) !== "." &&
+      local.charAt(local.length - 1) !== "." &&
+      local.indexOf("..") === -1;
+    var labels = domain.split(".");
+    var domainValid = labels.length >= 2 && labels.every(function (label) {
+      return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label);
+    });
+    var valid = localValid && domainValid;
     if (valid && !seen[normalized]) {
       seen[normalized] = true;
       result.push(normalized);

@@ -9,9 +9,11 @@ const modulePath = path.join(__dirname, "..", "31 - 注塑测试日报.js");
 function loadModule() {
   const context = vm.createContext({
     Utilities: {
-      formatDate(value) {
+      formatDate(value, timeZone, pattern) {
+        assert.equal(timeZone, "Asia/Shanghai");
+        assert.equal(pattern, "yyyy-MM-dd");
         const parts = new Intl.DateTimeFormat("en-CA", {
-          timeZone: "Asia/Shanghai",
+          timeZone,
           year: "numeric",
           month: "2-digit",
           day: "2-digit"
@@ -57,10 +59,26 @@ test("_itr_normalizeDate supports Date, ISO, dash, slash and empty values", () =
   );
   assert.equal(gas._itr_normalizeDate(realmDate), "2026-06-19");
   assert.equal(gas._itr_normalizeDate("2026-06-19T00:00:00.000Z"), "2026-06-19");
-  assert.equal(gas._itr_normalizeDate("2026-6-9"), "2026-06-09");
+  assert.equal(gas._itr_normalizeDate("2026-06-09"), "2026-06-09");
   assert.equal(gas._itr_normalizeDate("2026/06/19"), "2026-06-19");
   assert.equal(gas._itr_normalizeDate(""), "");
   assert.equal(gas._itr_normalizeDate(null), "");
+});
+
+test("_itr_normalizeDate rejects invalid and non-spec date strings", () => {
+  const gas = loadModule();
+  for (const value of [
+    "2026-02-30",
+    "2026/13/01",
+    "2026-6-9",
+    "6/19",
+    "June 19, 2026",
+    "2026-02-30T12:00:00.000Z",
+    "2026-06-19T25:00:00.000Z",
+    "2026-06-19 12:00:00"
+  ]) {
+    assert.equal(gas._itr_normalizeDate(value), "", value);
+  }
 });
 
 test("_itr_normalizeDate converts ISO timestamps across the UTC Shanghai date boundary", () => {
@@ -136,6 +154,25 @@ test("_itr_uniqueEmails trims, lowercases, validates and deduplicates", () => {
       null
     ])),
     ["kelland_zhao@colpal.com", "valid.user+tag@example.co.uk"]
+  );
+});
+
+test("_itr_uniqueEmails rejects unsafe characters and invalid domain labels", () => {
+  const gas = loadModule();
+  assert.deepEqual(
+    Array.from(gas._itr_uniqueEmails([
+      "normal.user@colpal.com",
+      "comma,user@colpal.com",
+      "semi;user@colpal.com",
+      '"quoted"@colpal.com',
+      "Name <user@colpal.com>",
+      "white space@colpal.com",
+      "line\nbreak@colpal.com",
+      "user@-colpal.com",
+      "user@colpal-.com",
+      "user@colpal..com"
+    ])),
+    ["normal.user@colpal.com"]
   );
 });
 
