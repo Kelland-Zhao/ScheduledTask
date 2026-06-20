@@ -53,6 +53,45 @@ function row(overrides = {}) {
   return { rowNumber: 8, values, links: {} };
 }
 
+function reportRecord(overrides = {}) {
+  const record = row({
+    1: "2026-06-19",
+    5: "产品&A",
+    6: "<测试说明>",
+    11: "IMM-01",
+    12: "项目负责人",
+    14: "测试负责人",
+    15: "已完成",
+    16: "测试样单",
+    17: "测试记录",
+    ...overrides
+  });
+  record.links = {
+    sample: "https://example.com/sample?a=1&b=2",
+    record: "https://example.com/record"
+  };
+  return record;
+}
+
+function fakeReportSpreadsheet(gas, yesterdayRecords, tomorrowRecords) {
+  const testSheet = {
+    getSheetId() {
+      return 636324977;
+    }
+  };
+  return {
+    getSheetByName(name) {
+      if (name === gas.ITR_CONFIG.TEST_SHEET) return testSheet;
+      return null;
+    },
+    __testSheet: testSheet,
+    __recordsByDate: {
+      "2026-06-19": yesterdayRecords,
+      "2026-06-21": tomorrowRecords
+    }
+  };
+}
+
 test("ITR_CONFIG contains the approved data source and runtime settings", () => {
   const gas = loadModule();
   assert.equal(
@@ -407,4 +446,270 @@ test("_itr_escapeHtml escapes ampersand, brackets, quotes and apostrophes", () =
     "A&amp;B &lt;tag a=&quot;x&quot;&gt;&#39;ok&#39;&lt;/tag&gt;"
   );
   assert.equal(gas._itr_escapeHtml(null), "");
+});
+
+test("_itr_buildEmailHtml renders only populated sections with red bilingual escaped content and result colors", () => {
+  const gas = loadModule();
+  const abnormal = reportRecord();
+  abnormal.problems = ["缺少<记录>"];
+  const normal = reportRecord({ 5: "正常产品", 6: "正常说明" });
+  normal.rowNumber = 9;
+  normal.problems = [];
+
+  const html = gas._itr_buildEmailHtml({
+    reportDate: "2026-06-20",
+    sourceUrl: "https://docs.google.com/spreadsheets/d/source/edit",
+    yesterday: { date: "2026-06-19", records: [abnormal, normal] },
+    tomorrow: { date: "2026-06-21", records: [] }
+  });
+
+  assert.match(html, /注塑测试日报/);
+  assert.match(html, /Injection Test Daily Report/);
+  assert.match(html, /昨日测试复盘/);
+  assert.doesNotMatch(html, /明日测试提醒/);
+  assert.match(html, /#E60012/i);
+  assert.match(html, /产品&amp;A/);
+  assert.match(html, /&lt;测试说明&gt;/);
+  assert.match(html, /缺少&lt;记录&gt;/);
+  assert.match(html, /正常产品/);
+  assert.match(html, /正常说明/);
+  assert.match(html, /gid=636324977&amp;range=A8/);
+  assert.match(html, /#fce8e6/i);
+  assert.match(html, /#e6f4ea/i);
+  assert.match(html, /昨日 2/);
+  assert.match(html, /明日 0/);
+  assert.match(html, /异常 1/);
+});
+
+test("_itr_run skips before recipient lookup and Gmail when both date sections are empty", () => {
+  let recipientCalls = 0;
+  let gmailCalls = 0;
+  const gas = loadModule({
+    GmailApp: {
+      sendEmail() {
+        gmailCalls++;
+      }
+    }
+  });
+  const spreadsheet = fakeReportSpreadsheet(gas, [], []);
+  gas._itr_getRecordsByDate = (sheet, dateKey) =>
+    spreadsheet.__recordsByDate[dateKey] || [];
+  gas._itr_getRecipients = () => {
+    recipientCalls++;
+    return ["should-not-run@example.com"];
+  };
+
+  const result = gas._itr_run({
+    now: vm.runInContext('new Date("2026-06-20T04:00:00.000Z")', gas),
+    spreadsheet
+  });
+
+  assert.equal(result.status, "skipped");
+  assert.equal(result.yesterdayCount, 0);
+  assert.equal(result.tomorrowCount, 0);
+  assert.equal(recipientCalls, 0);
+  assert.equal(gmailCalls, 0);
+});
+
+test("_itr_run testMode sends only to the test mailbox with test subject", () => {
+  const sent = [];
+  const gas = loadModule({
+    GmailApp: {
+      getAliases() {
+        return [];
+      },
+      sendEmail(to, subject, body, options) {
+        sent.push({ to, subject, body, options });
+      }
+    }
+  });
+  const yesterday = reportRecord();
+  const spreadsheet = fakeReportSpreadsheet(gas, [yesterday], []);
+  gas._itr_getRecordsByDate = (sheet, dateKey) =>
+    spreadsheet.__recordsByDate[dateKey] || [];
+  gas._itr_fillSmartChipLinks = (records) => records;
+  gas._itr_getRecipients = () => {
+    throw new Error("testMode must not read production recipients");
+  };
+
+  const result = gas._itr_run({
+    now: vm.runInContext('new Date("2026-06-20T04:00:00.000Z")', gas),
+    spreadsheet,
+    testMode: true
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, "kelland_zhao@colpal.com");
+  assert.match(sent[0].subject, /^\[测试\]/);
+  assert.equal(result.status, "sent");
+  assert.deepEqual(Array.from(result.recipients), ["kelland_zhao@colpal.com"]);
+});
+
+test("_itr_run production merges recipients, evaluates problems and returns statistics", () => {
+  const sent = [];
+  const gas = loadModule({
+    GmailApp: {
+      getAliases() {
+        return ["CSX_PlantSystem@colpal.com"];
+      },
+      sendEmail(to, subject, body, options) {
+        sent.push({ to, subject, body, options });
+      }
+    }
+  });
+  const yesterday = reportRecord({ 15: "" });
+  const tomorrow = reportRecord({ 11: "", 14: "", 16: "" });
+  tomorrow.rowNumber = 10;
+  const spreadsheet = fakeReportSpreadsheet(gas, [yesterday], [tomorrow]);
+  gas._itr_getRecordsByDate = (sheet, dateKey) =>
+    spreadsheet.__recordsByDate[dateKey] || [];
+  gas._itr_fillSmartChipLinks = (records) => records;
+  gas._itr_getRecipients = (source, records) => {
+    assert.equal(records.length, 2);
+    return ["notify@example.com", "owner@example.com"];
+  };
+
+  const result = gas._itr_run({
+    now: vm.runInContext('new Date("2026-06-20T04:00:00.000Z")', gas),
+    spreadsheet
+  });
+
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, "notify@example.com,owner@example.com");
+  assert.match(sent[0].subject, /【注塑测试日报】2026-06-20 昨日复盘 & 明日提醒/);
+  assert.equal(sent[0].options.from, "CSX_PlantSystem@colpal.com");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(result)),
+    {
+      status: "sent",
+      reportDate: "2026-06-20",
+      yesterdayCount: 1,
+      tomorrowCount: 1,
+      abnormalCount: 2,
+      recipients: ["notify@example.com", "owner@example.com"]
+    }
+  );
+});
+
+test("_itr_sendEmail uses configured alias only when available", () => {
+  const withAlias = [];
+  const gasWithAlias = loadModule({
+    GmailApp: {
+      getAliases() {
+        return ["other@example.com", "csx_plantsystem@colpal.com"];
+      },
+      sendEmail(to, subject, body, options) {
+        withAlias.push(options);
+      }
+    }
+  });
+  gasWithAlias._itr_sendEmail(["a@example.com"], "subject", "<p>html</p>");
+  assert.equal(withAlias[0].from, "CSX_PlantSystem@colpal.com");
+  assert.equal(withAlias[0].name, "注塑测试日报");
+
+  const withoutAlias = [];
+  const gasWithoutAlias = loadModule({
+    GmailApp: {
+      getAliases() {
+        return ["other@example.com"];
+      },
+      sendEmail(to, subject, body, options) {
+        withoutAlias.push(options);
+      }
+    }
+  });
+  gasWithoutAlias._itr_sendEmail(["a@example.com"], "subject", "<p>html</p>");
+  assert.equal(Object.hasOwn(withoutAlias[0], "from"), false);
+  assert.equal(withoutAlias[0].name, "注塑测试日报");
+});
+
+test("sendInjectionTestDailyReport logs scheduled success and manual skip", () => {
+  const logs = [];
+  const gas = loadModule({
+    writeLog(...args) {
+      logs.push(args);
+    }
+  });
+  gas._itr_run = () => ({
+    status: "sent",
+    yesterdayCount: 1,
+    tomorrowCount: 2,
+    abnormalCount: 1,
+    recipients: ["a@example.com"]
+  });
+  gas.sendInjectionTestDailyReport({ triggerUid: "scheduled" });
+  assert.deepEqual(logs[0].slice(0, 4), [
+    "sendInjectionTestDailyReport",
+    "成功",
+    "昨日 1 条，明日 2 条，异常 1 条，收件人 1 人",
+    "定时"
+  ]);
+
+  gas._itr_run = () => ({
+    status: "skipped",
+    yesterdayCount: 0,
+    tomorrowCount: 0,
+    abnormalCount: 0,
+    recipients: []
+  });
+  gas.sendInjectionTestDailyReport();
+  assert.deepEqual(logs[1].slice(0, 4), [
+    "sendInjectionTestDailyReport",
+    "跳过",
+    "昨日与明日均无测试记录",
+    "手动"
+  ]);
+});
+
+test("sendInjectionTestDailyReport logs failure and rethrows", () => {
+  const logs = [];
+  const gas = loadModule({
+    writeLog(...args) {
+      logs.push(args);
+    }
+  });
+  gas._itr_run = () => {
+    throw new Error("mail failed");
+  };
+
+  assert.throws(
+    () => gas.sendInjectionTestDailyReport(),
+    /mail failed/
+  );
+  assert.deepEqual(logs[0].slice(0, 4), [
+    "sendInjectionTestDailyReport",
+    "失败",
+    "mail failed",
+    "手动"
+  ]);
+});
+
+test("testInjectionTestDailyReport forces test mode and test log trigger", () => {
+  const logs = [];
+  let receivedOptions;
+  const gas = loadModule({
+    writeLog(...args) {
+      logs.push(args);
+    }
+  });
+  gas._itr_run = (options) => {
+    receivedOptions = options;
+    return {
+      status: "sent",
+      yesterdayCount: 1,
+      tomorrowCount: 0,
+      abnormalCount: 0,
+      recipients: ["kelland_zhao@colpal.com"]
+    };
+  };
+
+  gas.testInjectionTestDailyReport();
+
+  assert.equal(receivedOptions.testMode, true);
+  assert.deepEqual(logs[0].slice(0, 4), [
+    "testInjectionTestDailyReport",
+    "成功",
+    "昨日 1 条，明日 0 条，异常 0 条，收件人 1 人",
+    "测试"
+  ]);
 });
