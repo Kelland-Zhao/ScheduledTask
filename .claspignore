@@ -1,0 +1,11 @@
+**/.*
+.git/**
+.claude/**
+.windsurf/**
+.worktrees/**
+docs/**
+tests/**
+node_modules/**
+.clasp.json
+.gitignore
+.claspignore
