@@ -64,6 +64,101 @@ function _itr_normalizeDate(value) {
     : Utilities.formatDate(parsed, ITR_CONFIG.TIME_ZONE, "yyyy-MM-dd");
 }
 
+function _itr_addDays(date, days) {
+  var result = new Date(date.getTime());
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function _itr_dateKey(date) {
+  return Utilities.formatDate(date, ITR_CONFIG.TIME_ZONE, "yyyy-MM-dd");
+}
+
+function _itr_getRichTextLink(richTextValue) {
+  if (!richTextValue) return "";
+
+  var directLink = richTextValue.getLinkUrl();
+  if (directLink) return directLink;
+
+  var runs = richTextValue.getRuns() || [];
+  for (var i = 0; i < runs.length; i++) {
+    var runLink = runs[i].getLinkUrl();
+    if (runLink) return runLink;
+  }
+  return "";
+}
+
+function _itr_getRecordsByDate(sheet, targetDateKey) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  var range = sheet.getRange(2, 1, lastRow - 1, 21);
+  var values = range.getValues();
+  var richTextValues = range.getRichTextValues();
+  var records = [];
+
+  values.forEach(function (rowValues, index) {
+    if (_itr_normalizeDate(rowValues[1]) !== targetDateKey) return;
+
+    var richTextRow = richTextValues[index] || [];
+    records.push({
+      rowNumber: index + 2,
+      values: rowValues,
+      links: {
+        sample: _itr_getRichTextLink(richTextRow[16]),
+        record: _itr_getRichTextLink(richTextRow[17])
+      }
+    });
+  });
+  return records;
+}
+
+function _itr_fillSmartChipLinks(records, sheetName) {
+  var escapedSheetName = "'" + String(sheetName).replace(/'/g, "''") + "'";
+  var linkFields = [
+    { valueIndex: 16, column: "Q", key: "sample" },
+    { valueIndex: 17, column: "R", key: "record" }
+  ];
+
+  (records || []).forEach(function (record) {
+    record.links = record.links || {};
+    record.links.sample = record.links.sample || "";
+    record.links.record = record.links.record || "";
+    linkFields.forEach(function (field) {
+      if (!String(record.values[field.valueIndex] || "").trim() ||
+          record.links[field.key]) {
+        return;
+      }
+
+      var range = escapedSheetName + "!" + field.column + record.rowNumber;
+      try {
+        var response = Sheets.Spreadsheets.get(ITR_CONFIG.SPREADSHEET_ID, {
+          ranges: [range],
+          includeGridData: true,
+          fields: "sheets.data.rowData.values(chipRuns)"
+        });
+        var sheets = response.sheets || [];
+        var data = sheets[0] && sheets[0].data || [];
+        var rowData = data[0] && data[0].rowData || [];
+        var cells = rowData[0] && rowData[0].values || [];
+        var chipRuns = cells[0] && cells[0].chipRuns || [];
+        var uri = "";
+        for (var i = 0; i < chipRuns.length; i++) {
+          var properties = chipRuns[i].chip && chipRuns[i].chip.richLinkProperties;
+          if (properties && properties.uri) {
+            uri = properties.uri;
+            break;
+          }
+        }
+        if (uri) record.links[field.key] = uri;
+      } catch (error) {
+        console.warn("Smart Chip link read failed for " + range + ": " + error.message);
+      }
+    });
+  });
+  return records;
+}
+
 function _itr_isSkippedStatus(status) {
   return ["满产", "模具不在线", "取消"].indexOf(String(status || "").trim()) !== -1;
 }
@@ -93,6 +188,42 @@ function _itr_checkBeforeProblems(record) {
     problems.push("测试样单链接未维护");
   }
   return problems;
+}
+
+function _itr_getRecipients(spreadsheet, records) {
+  var notificationSheet = spreadsheet.getSheetByName(ITR_CONFIG.NOTIFICATION_SHEET);
+  if (!notificationSheet) {
+    throw new Error("缺少必需工作表：通知清单");
+  }
+
+  var nameSheet = spreadsheet.getSheetByName(ITR_CONFIG.NAME_SHEET);
+  if (!nameSheet) {
+    throw new Error("缺少必需工作表：Name Database");
+  }
+
+  var emails = [];
+  var notificationRows = notificationSheet.getDataRange().getValues();
+  notificationRows.forEach(function (notificationRow) {
+    var notificationType = String(notificationRow[1] || "");
+    if (notificationType.indexOf("测试后日报") !== -1 ||
+        notificationType.indexOf("测试前日报") !== -1) {
+      emails.push(notificationRow[0]);
+    }
+  });
+
+  var ownerNames = {};
+  (records || []).forEach(function (record) {
+    var ownerName = String(record.values[12] || "").trim();
+    if (ownerName) ownerNames[ownerName] = true;
+  });
+
+  var nameRows = nameSheet.getDataRange().getValues();
+  nameRows.forEach(function (nameRow) {
+    var name = String(nameRow[0] || "").trim();
+    if (ownerNames[name]) emails.push(nameRow[1]);
+  });
+
+  return _itr_uniqueEmails(emails);
 }
 
 function _itr_uniqueEmails(emails) {
