@@ -296,19 +296,20 @@ function _itr_statusHtml(status, problems) {
     _itr_escapeHtml(text) + "</span>";
 }
 
-function _itr_buildSectionHtml(title, dateKey, records, sourceUrl) {
+function _itr_buildSectionHtml(titleCn, titleEn, dateKey, records, sourceUrl) {
   if (!records || records.length === 0) return "";
 
   var headers = [
-    "序号 / No.", "产品名称 / Product", "测试说明 / Description",
-    "日期 / Date", "机台 / Machine", "项目负责人 / Project Owner",
-    "测试负责人 / Test Owner", "状态 / Status", "样单 / Sample",
-    "记录 / Record", "检查结果 / Check Result"
+    ["序号", "No."], ["产品名称", "Product"], ["测试说明", "Description"],
+    ["日期", "Date"], ["机台", "Machine"], ["项目负责人", "Project Owner"],
+    ["测试负责人", "Test Owner"], ["状态", "Status"], ["样单", "Sample"],
+    ["记录", "Record"], ["检查结果", "Check Result"]
   ];
-  var headerHtml = headers.map(function (header) {
-    return '<th style="padding:8px 6px;border:1px solid #ddd;background:#E60012;' +
-      'color:#fff;font-size:12px;white-space:nowrap;">' +
-      _itr_escapeHtml(header) + "</th>";
+  var headerHtml = headers.map(function (pair) {
+    return '<th style="padding:5px 6px;border:1px solid #ddd;background:#E60012;' +
+      'color:#fff;font-size:12px;font-weight:bold;text-align:center;' +
+      'vertical-align:middle;">' +
+      _itr_escapeHtml(pair[0]) + "<br>" + _itr_escapeHtml(pair[1]) + "</th>";
   }).join("");
 
   var rowsHtml = records.map(function (record, index) {
@@ -331,14 +332,20 @@ function _itr_buildSectionHtml(title, dateKey, records, sourceUrl) {
     ];
     return '<tr style="background:' + rowBackground + ';">' +
       cells.map(function (cell) {
-        return '<td style="padding:7px 6px;border:1px solid #ddd;' +
-          'font-size:12px;vertical-align:top;">' + (cell || "-") + "</td>";
+        return '<td style="padding:5px 6px;border:1px solid #ddd;' +
+          'font-size:12px;vertical-align:middle;text-align:center;">' +
+          (cell || "-") + "</td>";
       }).join("") + "</tr>";
   }).join("");
 
   return '<div style="margin-top:22px;">' +
-    '<h2 style="margin:0 0 8px;color:#E60012;font-size:18px;">' +
-    _itr_escapeHtml(title) + " · " + _itr_escapeHtml(dateKey) + "</h2>" +
+    '<div style="font-size:13px;font-weight:700;color:#6c757d;' +
+    'border-left:3px solid #E60012;padding-left:10px;margin:18px 0 10px;' +
+    'letter-spacing:0.5px;">' +
+    _itr_escapeHtml(titleCn) + "<br>" +
+    '<span style="font-weight:400;">' +
+    _itr_escapeHtml(titleEn.toUpperCase()) + "</span>" +
+    " · " + _itr_escapeHtml(dateKey) + "</div>" +
     '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;' +
     'font-family:Arial,sans-serif;">' +
     "<thead><tr>" + headerHtml + "</tr></thead><tbody>" + rowsHtml +
@@ -363,13 +370,13 @@ function _itr_buildEmailHtml(model) {
     "昨日 " + yesterdayRecords.length + " · 明日 " + tomorrowRecords.length +
     " · 异常 " + abnormalCount + "</div>" +
     _itr_buildSectionHtml(
-      "昨日测试复盘 / Yesterday Review",
+      "昨日测试复盘", "Yesterday Review",
       model.yesterday.date,
       yesterdayRecords,
       model.sourceUrl
     ) +
     _itr_buildSectionHtml(
-      "明日测试提醒 / Tomorrow Reminder",
+      "明日测试提醒", "Tomorrow Reminder",
       model.tomorrow.date,
       tomorrowRecords,
       model.sourceUrl
