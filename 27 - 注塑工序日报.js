@@ -59,9 +59,12 @@ function sendDailyProcessReport(e) {
     // 4. 备件信息
     var sparePartsInfo = _dr_getSparePartsInfo();
 
+    // 4.5 注塑测试信息
+    var testInfo = _dr_getTestInfo(tomorrow);
+
     // 5. 构建邮件 HTML
     var todayStr = formatVariableAsDate(new Date());
-    var html = _dr_buildEmailHtml(summary, sparePartsInfo, tomorrowDisplay, todayStr);
+    var html = _dr_buildEmailHtml(summary, sparePartsInfo, testInfo, tomorrowDisplay, todayStr);
 
     // 6. 获取收件人
     var recipients = _dr_TEST_MODE ? [_dr_TEST_EMAIL] : _dr_getRecipients();
@@ -396,6 +399,132 @@ function _dr_buildSparePartsSection(sp) {
   return html;
 }
 
+// ========== 注塑测试信息 ==========
+var _dr_TEST_SPREADSHEET_ID = "17ys3UDFWjhfaPnk0TErqqeU0FnMP7nsRoRsTmlmm2fg";
+
+/** 从注塑测试表读取明天的测试记录并返回摘要 */
+function _dr_getTestInfo(targetDate) {
+  var result = {
+    total: 0,
+    problemCount: 0,
+    records: []
+  };
+
+  try {
+    var ss = SpreadsheetApp.openById(_dr_TEST_SPREADSHEET_ID);
+    var testSheet = ss.getSheetByName("注塑测试");
+    if (!testSheet || testSheet.getLastRow() <= 1) return result;
+
+    // 读取 21 列（A-U），与 31 号文件列索引一致
+    var lastRow = testSheet.getLastRow();
+    var data = testSheet.getRange(2, 1, lastRow - 1, 21).getValues();
+
+    // 将目标日期转为 yyyy-MM-dd 用于比较
+    var targetKey = Utilities.formatDate(targetDate, currentTimeZone, "yyyy-MM-dd");
+
+    data.forEach(function(row, index) {
+      // 日期列 B（索引 1）
+      var dateKey = "";
+      var dateVal = row[1];
+      if (dateVal instanceof Date) {
+        dateKey = Utilities.formatDate(dateVal, currentTimeZone, "yyyy-MM-dd");
+      } else if (dateVal) {
+        dateKey = String(dateVal).trim();
+      }
+      if (dateKey !== targetKey) return;
+
+      // 跳过满产/模具不在线/取消的记录
+      var status = String(row[15] || "").trim();
+      if (status === "满产" || status === "模具不在线" || status === "取消") return;
+
+      result.total++;
+
+      // 检查缺失项
+      var problems = [];
+      if (!String(row[11] || "").trim()) problems.push("测试机台未维护");
+      if (!String(row[14] || "").trim()) problems.push("测试负责人未维护");
+      if (!String(row[16] || "").trim()) problems.push("测试样单链接未维护");
+
+      if (problems.length > 0) result.problemCount++;
+
+      result.records.push({
+        rowNumber: index + 2,
+        product: String(row[5] || "").trim(),
+        description: String(row[6] || "").trim(),
+        machine: String(row[11] || "").trim(),
+        projectOwner: String(row[12] || "").trim(),
+        testOwner: String(row[14] || "").trim(),
+        status: status,
+        problems: problems
+      });
+    });
+
+  } catch (err) {
+    console.error("读取注塑测试信息失败: " + err.message);
+  }
+
+  return result;
+}
+
+/** 构建注塑测试信息 HTML 部分 */
+function _dr_buildTestInfoSection(testInfo) {
+  var html = '';
+
+  html += '<h3 style="color:#333;border-bottom:2px solid #E60012;padding-bottom:8px;margin-top:28px;font-size:17px">三、注塑测试信息</h3>';
+
+  // 摘要卡片
+  html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;margin-top:12px"><tr>';
+  html += '<td style="width:33%;vertical-align:top;padding-right:10px">';
+  html += '<div style="background:#FFF9F9;border:1px solid #f0d0d0;border-radius:4px;padding:14px;text-align:center">';
+  html += '<p style="margin:0;color:#888;font-size:12px">明日测试数</p>';
+  html += '<p style="margin:8px 0 0;font-size:28px;font-weight:bold;color:#333">' + testInfo.total + '</p>';
+  html += '</div></td>';
+
+  html += '<td style="width:33%;vertical-align:top;padding:0 5px">';
+  html += '<div style="background:#FFF9F9;border:1px solid #f0d0d0;border-radius:4px;padding:14px;text-align:center">';
+  html += '<p style="margin:0;color:#888;font-size:12px">正常</p>';
+  html += '<p style="margin:8px 0 0;font-size:28px;font-weight:bold;color:#27ae60">' + (testInfo.total - testInfo.problemCount) + '</p>';
+  html += '</div></td>';
+
+  html += '<td style="width:33%;vertical-align:top;padding-left:10px">';
+  html += '<div style="background:#FFF9F9;border:1px solid #f0d0d0;border-radius:4px;padding:14px;text-align:center">';
+  html += '<p style="margin:0;color:#888;font-size:12px">缺失提醒</p>';
+  var problemColor = testInfo.problemCount > 0 ? "#e74c3c" : "#27ae60";
+  html += '<p style="margin:8px 0 0;font-size:28px;font-weight:bold;color:' + problemColor + '">' + testInfo.problemCount + '</p>';
+  html += '</div></td>';
+  html += '</tr></table>';
+
+  // 明细表（仅显示有问题或全部记录）
+  if (testInfo.records.length > 0) {
+    // 表头
+    html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;font-size:13px;border-collapse:collapse;margin-top:12px">';
+    html += '<tr style="background:#fde0e0;color:#333;font-weight:bold">';
+    ["#", "产品名称", "测试说明", "机台", "测试负责人", "状态", "缺失项"].forEach(function(h) {
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f0d0d0">' + escapeHtml(h) + '</td>';
+    });
+    html += '</tr>';
+
+    testInfo.records.forEach(function(r, idx) {
+      var bg = r.problems.length > 0 ? "#FFC107" : (idx % 2 === 0 ? "#ffffff" : "#fff8f8");
+      html += '<tr style="background:' + bg + '">';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">' + (idx + 1) + '</td>';
+      html += '<td style="padding:8px;text-align:left;border-bottom:1px solid #f5f5f5">' + escapeHtml(r.product || "-") + '</td>';
+      html += '<td style="padding:8px;text-align:left;border-bottom:1px solid #f5f5f5">' + escapeHtml(r.description || "-") + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">' + escapeHtml(r.machine || "-") + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">' + escapeHtml(r.testOwner || "-") + '</td>';
+      html += '<td style="padding:8px;text-align:center;border-bottom:1px solid #f5f5f5">' + escapeHtml(r.status || "-") + '</td>';
+      html += '<td style="padding:8px;text-align:left;border-bottom:1px solid #f5f5f5;color:#e74c3c">' + escapeHtml(r.problems.join("，") || "无") + '</td>';
+      html += '</tr>';
+    });
+
+    html += '</table>';
+  } else {
+    html += '<p style="color:#999;font-size:13px;margin:12px 0">明日无测试计划</p>';
+  }
+
+  return html;
+}
+
 /** 金额格式化（#,###.## 无小数则省略） */
 function _dr_formatMoney(val) {
   var parts = val.toFixed(2).split(".");
@@ -435,7 +564,67 @@ function _dr_getRecipients() {
 }
 
 // ========== 邮件 HTML ==========
-function _dr_buildEmailHtml(summary, spareParts, tomorrowDisplay, todayStr) {
+
+/** 计算单个车间三班合计 */
+function _dr_workshopTotals(shiftData) {
+  var machines = 0, people = 0, manhours = 0;
+  _dr_SHIFT_ORDER.forEach(function(sh) {
+    machines += shiftData[sh].machines || 0;
+    people += shiftData[sh].people || 0;
+    manhours += shiftData[sh].manhours || 0;
+  });
+  manhours = Math.round(manhours * 10) / 10;
+  var mpp = people > 0 ? Math.round(machines / people * 100) / 100 : 0;
+  return { machines: machines, people: people, manhours: manhours, mpp: mpp };
+}
+
+/** 构建顶部摘要条（4卡片横排） */
+function _dr_buildSummaryBar(tb1, tb2, spareParts, testInfo) {
+  var cardStyle = 'background:#FFF9F9;border:1px solid #f0d0d0;border-radius:4px;padding:10px 8px;text-align:center;height:84px';
+  var titleStyle = 'margin:0;color:#E60012;font-size:11px;font-weight:bold;line-height:1.2';
+  var mainStyle = 'margin:6px 0 0;font-size:19px;font-weight:bold;color:#333;line-height:1.3';
+  var subStyle = 'margin:4px 0 0;font-size:12px;color:#666;line-height:1.3';
+
+  var html = '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:4px"><tr>';
+
+  // TB1 卡片
+  html += '<td style="width:25%;vertical-align:top;padding-right:6px">';
+  html += '<div style="' + cardStyle + '">';
+  html += '<p style="' + titleStyle + '">TB1 车间</p>';
+  html += '<p style="' + mainStyle + '">' + tb1.machines + '台  ' + tb1.people + '人</p>';
+  html += '<p style="' + subStyle + '">' + tb1.manhours + 'h  人均' + tb1.mpp + '台</p>';
+  html += '</div></td>';
+
+  // TB2 卡片
+  html += '<td style="width:25%;vertical-align:top;padding:0 3px">';
+  html += '<div style="' + cardStyle + '">';
+  html += '<p style="' + titleStyle + '">TB2 车间</p>';
+  html += '<p style="' + mainStyle + '">' + tb2.machines + '台  ' + tb2.people + '人</p>';
+  html += '<p style="' + subStyle + '">' + tb2.manhours + 'h  人均' + tb2.mpp + '台</p>';
+  html += '</div></td>';
+
+  // 备件库存卡片
+  html += '<td style="width:25%;vertical-align:top;padding:0 3px">';
+  html += '<div style="' + cardStyle + '">';
+  html += '<p style="' + titleStyle + '">备件库存</p>';
+  html += '<p style="' + mainStyle + '">¥' + _dr_formatMoney(spareParts.totalValue) + '</p>';
+  html += '<p style="' + subStyle + '">数据日期：' + escapeHtml(spareParts.dataDate || "-") + '</p>';
+  html += '</div></td>';
+
+  // 明日测试卡片
+  html += '<td style="width:25%;vertical-align:top;padding-left:6px">';
+  html += '<div style="' + cardStyle + '">';
+  html += '<p style="' + titleStyle + '">明日测试</p>';
+  html += '<p style="' + mainStyle + '">' + testInfo.total + '项</p>';
+  var testSubColor = testInfo.problemCount > 0 ? "#e74c3c" : "#27ae60";
+  html += '<p style="margin:4px 0 0;font-size:12px;color:' + testSubColor + '">' + (testInfo.problemCount > 0 ? '⚠ ' + testInfo.problemCount + ' 缺失' : '✓ 全部就绪') + '</p>';
+  html += '</div></td>';
+
+  html += '</tr></table>';
+  return html;
+}
+
+function _dr_buildEmailHtml(summary, spareParts, testInfo, tomorrowDisplay, todayStr) {
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
   html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:960px;margin:0 auto">';
 
@@ -453,8 +642,13 @@ function _dr_buildEmailHtml(summary, spareParts, tomorrowDisplay, todayStr) {
 
   html += '<div style="padding:20px 28px">';
 
+  // ===== 顶部摘要条 =====
+  var tb1Totals = _dr_workshopTotals(summary["TB1"]);
+  var tb2Totals = _dr_workshopTotals(summary["TB2"]);
+  html += _dr_buildSummaryBar(tb1Totals, tb2Totals, spareParts, testInfo);
+
   // ===== 第一部分：人员安排信息 =====
-  html += '<h3 style="color:#333;border-bottom:2px solid #E60012;padding-bottom:8px;margin-top:0;font-size:17px">一、人员安排信息</h3>';
+  html += '<h3 style="color:#333;border-bottom:2px solid #E60012;padding-bottom:8px;margin-top:20px;font-size:17px">一、人员安排信息</h3>';
   html += '<p style="color:#888;font-size:13px;margin:8px 0 0">数据日期：' + tomorrowDisplay + '</p>';
 
   // TB1 / TB2 并排布局（邮件兼容 table layout）
@@ -469,6 +663,9 @@ function _dr_buildEmailHtml(summary, spareParts, tomorrowDisplay, todayStr) {
 
   // ===== 第二部分：备件信息 =====
   html += _dr_buildSparePartsSection(spareParts);
+
+  // ===== 第三部分：注塑测试信息 =====
+  html += _dr_buildTestInfoSection(testInfo);
 
   html += '<p style="color:#bdc3c7;font-size:11px;margin-top:28px">此邮件由 工序日报系统 自动发送</p>';
   html += '</div></div></body></html>';
