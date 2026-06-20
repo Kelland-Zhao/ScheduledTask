@@ -494,6 +494,123 @@ test("_itr_linkHtml uses safe http text as fallback link and rejects other schem
   );
   assert.equal(gas._itr_linkHtml("javascript:alert(1)", ""), "javascript:alert(1)");
   assert.equal(gas._itr_linkHtml("file:///tmp/test", ""), "file:///tmp/test");
+  assert.equal(gas._itr_linkHtml("点击", "javascript:alert(1)"), "点击");
+  assert.equal(gas._itr_linkHtml("点击", "data:text/html,<script>"), "点击");
+  assert.equal(gas._itr_linkHtml("点击", "ftp://example.com/file"), "点击");
+  assert.match(
+    gas._itr_linkHtml("点击", "HTTPS://example.com/Path"),
+    /^<a href="HTTPS:\/\/example\.com\/Path"/
+  );
+});
+
+test("_itr_getRecordsByDateKeys reads A:U once and groups multiple target dates", () => {
+  const calls = { values: 0, richText: 0 };
+  const values = [
+    ["A2", "2026-06-19", ...Array(19).fill("")],
+    ["A3", "2026-06-20", ...Array(19).fill("")],
+    ["A4", "2026-06-21", ...Array(19).fill("")]
+  ];
+  const sheet = {
+    getLastRow() {
+      return 4;
+    },
+    getRange() {
+      return {
+        getValues() {
+          calls.values++;
+          return values;
+        },
+        getRichTextValues() {
+          calls.richText++;
+          return values.map(() => Array(21).fill(null));
+        }
+      };
+    }
+  };
+
+  const gas = loadModule();
+  const grouped = gas._itr_getRecordsByDateKeys(
+    sheet,
+    ["2026-06-19", "2026-06-21"]
+  );
+
+  assert.equal(calls.values, 1);
+  assert.equal(calls.richText, 1);
+  assert.equal(grouped["2026-06-19"].length, 1);
+  assert.equal(grouped["2026-06-19"][0].rowNumber, 2);
+  assert.equal(grouped["2026-06-21"].length, 1);
+  assert.equal(grouped["2026-06-21"][0].rowNumber, 4);
+  assert.equal(grouped["2026-06-20"], undefined);
+});
+
+test("_itr_run reads sheet values and rich text only once for yesterday and tomorrow", () => {
+  const calls = { values: 0, richText: 0 };
+  const yesterdayValues = Array(21).fill("");
+  yesterdayValues[1] = "2026-06-19";
+  yesterdayValues[5] = "昨日产品";
+  yesterdayValues[15] = "已完成";
+  yesterdayValues[17] = "https://example.com/record";
+  const tomorrowValues = Array(21).fill("");
+  tomorrowValues[1] = "2026-06-21";
+  tomorrowValues[5] = "明日产品";
+  tomorrowValues[11] = "IMM-01";
+  tomorrowValues[14] = "测试负责人";
+  tomorrowValues[16] = "https://example.com/sample";
+  const testSheet = {
+    getLastRow() {
+      return 3;
+    },
+    getRange() {
+      return {
+        getValues() {
+          calls.values++;
+          return [yesterdayValues, tomorrowValues];
+        },
+        getRichTextValues() {
+          calls.richText++;
+          return [Array(21).fill(null), Array(21).fill(null)];
+        }
+      };
+    }
+  };
+  const sent = [];
+  const gas = loadModule({
+    Sheets: {
+      Spreadsheets: {
+        get() {
+          return { sheets: [] };
+        }
+      }
+    },
+    GmailApp: {
+      getAliases() {
+        return [];
+      },
+      sendEmail(...args) {
+        sent.push(args);
+      }
+    }
+  });
+  const spreadsheet = {
+    getSheetByName(name) {
+      return name === gas.ITR_CONFIG.TEST_SHEET ? testSheet : null;
+    },
+    getUrl() {
+      return "https://docs.google.com/spreadsheets/d/source/edit";
+    }
+  };
+  gas._itr_getRecipients = () => ["notify@example.com"];
+
+  const result = gas._itr_run({
+    now: vm.runInContext('new Date("2026-06-20T04:00:00.000Z")', gas),
+    spreadsheet
+  });
+
+  assert.equal(calls.values, 1);
+  assert.equal(calls.richText, 1);
+  assert.equal(result.yesterdayCount, 1);
+  assert.equal(result.tomorrowCount, 1);
+  assert.equal(sent.length, 1);
 });
 
 test("_itr_run skips before recipient lookup and Gmail when both date sections are empty", () => {
@@ -507,8 +624,11 @@ test("_itr_run skips before recipient lookup and Gmail when both date sections a
     }
   });
   const spreadsheet = fakeReportSpreadsheet(gas, [], []);
-  gas._itr_getRecordsByDate = (sheet, dateKey) =>
-    spreadsheet.__recordsByDate[dateKey] || [];
+  gas._itr_getRecordsByDateKeys = (sheet, dateKeys) =>
+    Object.fromEntries(dateKeys.map((dateKey) => [
+      dateKey,
+      spreadsheet.__recordsByDate[dateKey] || []
+    ]));
   gas._itr_getRecipients = () => {
     recipientCalls++;
     return ["should-not-run@example.com"];
@@ -540,8 +660,11 @@ test("_itr_run testMode sends only to the test mailbox with test subject", () =>
   });
   const yesterday = reportRecord();
   const spreadsheet = fakeReportSpreadsheet(gas, [yesterday], []);
-  gas._itr_getRecordsByDate = (sheet, dateKey) =>
-    spreadsheet.__recordsByDate[dateKey] || [];
+  gas._itr_getRecordsByDateKeys = (sheet, dateKeys) =>
+    Object.fromEntries(dateKeys.map((dateKey) => [
+      dateKey,
+      spreadsheet.__recordsByDate[dateKey] || []
+    ]));
   gas._itr_fillSmartChipLinks = (records) => records;
   gas._itr_getRecipients = () => {
     throw new Error("testMode must not read production recipients");
@@ -576,8 +699,11 @@ test("_itr_run production merges recipients, evaluates problems and returns stat
   const tomorrow = reportRecord({ 11: "", 14: "", 16: "" });
   tomorrow.rowNumber = 10;
   const spreadsheet = fakeReportSpreadsheet(gas, [yesterday], [tomorrow]);
-  gas._itr_getRecordsByDate = (sheet, dateKey) =>
-    spreadsheet.__recordsByDate[dateKey] || [];
+  gas._itr_getRecordsByDateKeys = (sheet, dateKeys) =>
+    Object.fromEntries(dateKeys.map((dateKey) => [
+      dateKey,
+      spreadsheet.__recordsByDate[dateKey] || []
+    ]));
   gas._itr_fillSmartChipLinks = (records) => records;
   gas._itr_getRecipients = (source, records) => {
     assert.equal(records.length, 2);
@@ -715,6 +841,64 @@ test("sendInjectionTestDailyReport logs failure and rethrows", () => {
     "mail failed",
     "手动"
   ]);
+});
+
+test("_itr_safeWriteLog swallows logging failures and reports them to console", () => {
+  const errors = [];
+  const gas = loadModule({
+    console: {
+      error(...args) {
+        errors.push(args);
+      }
+    },
+    writeLog() {
+      throw new Error("log unavailable");
+    }
+  });
+
+  assert.equal(
+    gas._itr_safeWriteLog("fn", "成功", "detail", "手动", ""),
+    false
+  );
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].join(" "), /log unavailable/);
+});
+
+test("entry rethrows original run error even when failure logging also fails", () => {
+  const gas = loadModule({
+    console: { error() {} },
+    writeLog() {
+      throw new Error("log unavailable");
+    }
+  });
+  const original = new Error("original run failure");
+  gas._itr_run = () => {
+    throw original;
+  };
+
+  assert.throws(
+    () => gas.sendInjectionTestDailyReport(),
+    (error) => error === original
+  );
+});
+
+test("entry returns sent result when success logging fails", () => {
+  const gas = loadModule({
+    console: { error() {} },
+    writeLog() {
+      throw new Error("log unavailable");
+    }
+  });
+  const sentResult = {
+    status: "sent",
+    yesterdayCount: 1,
+    tomorrowCount: 0,
+    abnormalCount: 0,
+    recipients: ["a@example.com"]
+  };
+  gas._itr_run = () => sentResult;
+
+  assert.equal(gas.sendInjectionTestDailyReport(), sentResult);
 });
 
 test("testInjectionTestDailyReport forces test mode and test log trigger", () => {

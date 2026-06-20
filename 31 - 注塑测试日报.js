@@ -89,19 +89,27 @@ function _itr_getRichTextLink(richTextValue) {
 }
 
 function _itr_getRecordsByDate(sheet, targetDateKey) {
+  return _itr_getRecordsByDateKeys(sheet, [targetDateKey])[targetDateKey] || [];
+}
+
+function _itr_getRecordsByDateKeys(sheet, targetDateKeys) {
+  var grouped = {};
+  (targetDateKeys || []).forEach(function (key) {
+    grouped[key] = [];
+  });
   var lastRow = sheet.getLastRow();
-  if (lastRow < 2) return [];
+  if (lastRow < 2) return grouped;
 
   var range = sheet.getRange(2, 1, lastRow - 1, 21);
   var values = range.getValues();
   var richTextValues = range.getRichTextValues();
-  var records = [];
 
   values.forEach(function (rowValues, index) {
-    if (_itr_normalizeDate(rowValues[1]) !== targetDateKey) return;
+    var dateKey = _itr_normalizeDate(rowValues[1]);
+    if (!Object.prototype.hasOwnProperty.call(grouped, dateKey)) return;
 
     var richTextRow = richTextValues[index] || [];
-    records.push({
+    grouped[dateKey].push({
       rowNumber: index + 2,
       values: rowValues,
       links: {
@@ -110,7 +118,7 @@ function _itr_getRecordsByDate(sheet, targetDateKey) {
       }
     });
   });
-  return records;
+  return grouped;
 }
 
 function _itr_fillSmartChipLinks(records, sheetName) {
@@ -269,7 +277,9 @@ function _itr_linkHtml(label, url) {
   var linkUrl = String(url || "").trim();
   var labelUrl = String(label || "").trim();
   if (!linkUrl && /^https?:\/\//i.test(labelUrl)) linkUrl = labelUrl;
-  if (!linkUrl) return safeLabel === "查看 / View" ? "-" : safeLabel;
+  if (!/^https?:\/\//i.test(linkUrl)) {
+    return safeLabel === "查看 / View" ? "-" : safeLabel;
+  }
   return '<a href="' + _itr_escapeHtml(linkUrl) +
     '" style="color:#E60012;text-decoration:none;">' + safeLabel + "</a>";
 }
@@ -401,8 +411,12 @@ function _itr_run(options) {
     throw new Error("缺少必需工作表：" + ITR_CONFIG.TEST_SHEET);
   }
 
-  var yesterdayRecords = _itr_getRecordsByDate(testSheet, yesterdayDate);
-  var tomorrowRecords = _itr_getRecordsByDate(testSheet, tomorrowDate);
+  var recordsByDate = _itr_getRecordsByDateKeys(
+    testSheet,
+    [yesterdayDate, tomorrowDate]
+  );
+  var yesterdayRecords = recordsByDate[yesterdayDate] || [];
+  var tomorrowRecords = recordsByDate[tomorrowDate] || [];
   if (yesterdayRecords.length === 0 && tomorrowRecords.length === 0) {
     return {
       status: "skipped",
@@ -459,14 +473,30 @@ function _itr_run(options) {
 
 function _itr_logResult(functionName, result, trigger) {
   if (result.status === "skipped") {
-    writeLog(functionName, "跳过", "昨日与明日均无测试记录", trigger, "");
+    _itr_safeWriteLog(functionName, "跳过", "昨日与明日均无测试记录", trigger, "");
     return;
   }
   var detail = "昨日 " + result.yesterdayCount +
     " 条，明日 " + result.tomorrowCount +
     " 条，异常 " + result.abnormalCount +
     " 条，收件人 " + result.recipients.length + " 人";
-  writeLog(functionName, "成功", detail, trigger, "TO: " + result.recipients.join(","));
+  _itr_safeWriteLog(
+    functionName,
+    "成功",
+    detail,
+    trigger,
+    "TO: " + result.recipients.join(",")
+  );
+}
+
+function _itr_safeWriteLog(functionName, status, detail, trigger, remark) {
+  try {
+    writeLog(functionName, status, detail, trigger, remark);
+    return true;
+  } catch (error) {
+    console.error("注塑测试日报日志写入失败: " + error.message);
+    return false;
+  }
 }
 
 function _itr_execute(functionName, trigger, options) {
@@ -475,7 +505,13 @@ function _itr_execute(functionName, trigger, options) {
     _itr_logResult(functionName, result, trigger);
     return result;
   } catch (error) {
-    writeLog(functionName, "失败", error.message, trigger, error.stack || "");
+    _itr_safeWriteLog(
+      functionName,
+      "失败",
+      error.message,
+      trigger,
+      error.stack || ""
+    );
     throw error;
   }
 }
