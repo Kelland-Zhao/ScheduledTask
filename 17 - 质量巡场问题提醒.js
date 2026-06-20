@@ -98,7 +98,7 @@ function sendQualityTourIssues(e) {
     // 4. 发送邮件
     if (recipients.length > 0) {
       var today = formatVariableAsDate(new Date());
-      var subject = "[质量巡场] 未解决问题汇总 " + today;
+      var subject = "【质量巡场】 未解决问题汇总 " + today;
       var html = _qt_buildEmailHtml(sheetResults, totalUnresolved, today);
 
       try {

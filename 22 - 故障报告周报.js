@@ -285,7 +285,7 @@ function sendWeeklyRemindersByProcess(failureData, nameToUser, processToAdmins, 
       var ccList = ccAll.filter(function(e) { if (ccSeen[e]) return false; ccSeen[e] = true; return true; }).filter(Boolean);
 
       // 生成邮件
-      var subject = '[提醒] 故障报告定期提醒 - ' + process + ' / Failure Report Weekly Reminder - ' + process;
+      var subject = '【提醒】 故障报告定期提醒 - ' + process + ' / Failure Report Weekly Reminder - ' + process;
       var htmlBody = generateWeeklyProcessEmailContent(process, records);
 
       GmailApp.sendEmail(toEmails.join(','), subject, '请使用支持HTML的邮件客户端查看此邮件。', {
@@ -320,7 +320,7 @@ function generateWeeklyProcessEmailContent(processName, records) {
     var emailBody = '<div style="font-family: Arial, sans-serif; max-width: 900px; margin: 0 auto; background-color: #f8f9fa; padding: 20px;">' +
       '<div style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); padding: 30px; margin-bottom: 20px;">' +
       '<h2 style="color: #2c3e50; text-align: center; margin-bottom: 20px; border-bottom: 3px solid #3498db; padding-bottom: 10px;">' +
-      '[提醒] 故障报告定期提醒 - ' + processName + ' 工序<br>' +
+      '【提醒】 故障报告定期提醒 - ' + processName + ' 工序<br>' +
       '<span style="font-size: 0.8em; color: #7f8c8d;">Failure Report Weekly Reminder - ' + processName + ' Process</span>' +
       '</h2>' +
       '<p style="color: #34495e; font-size: 16px; line-height: 1.6; margin-bottom: 20px;">' +
@@ -331,7 +331,7 @@ function generateWeeklyProcessEmailContent(processName, records) {
     if (records.length > 0) {
       emailBody += '<div style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); padding: 30px; margin-bottom: 20px;">' +
         '<h3 style="color: #2c3e50; margin-bottom: 20px; border-bottom: 2px solid #3498db; padding-bottom: 10px;">' +
-        '[详情] 未上传故障报告 Unuploaded Failure Reports (' + records.length + '条)</h3>' +
+        '【详情】 未上传故障报告 Unuploaded Failure Reports (' + records.length + '条)</h3>' +
         '<div style="overflow-x: auto;">' +
         '<table style="width: 100%; border-collapse: collapse; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">' +
         '<thead>' +
@@ -350,7 +350,7 @@ function generateWeeklyProcessEmailContent(processName, records) {
 
         var overdueDisplay = '';
         if (record.overdueDays >= FR_CONFIG.OVERDUE_DAYS) {
-          overdueDisplay = '<div style="display:inline-block;text-align:center;"><div style="background:linear-gradient(135deg,#e74c3c,#c0392b);color:white;padding:6px 12px;border-radius:16px;font-weight:600;font-size:12px;box-shadow:0 2px 6px rgba(231,76,60,0.3);display:inline-block;min-width:80px;"><span style="display:block;">[超期] ' + record.overdueDays + '天</span><span style="display:block;font-size:10px;opacity:0.9;">Days</span></div></div>';
+          overdueDisplay = '<div style="display:inline-block;text-align:center;"><div style="background:linear-gradient(135deg,#e74c3c,#c0392b);color:white;padding:6px 12px;border-radius:16px;font-weight:600;font-size:12px;box-shadow:0 2px 6px rgba(231,76,60,0.3);display:inline-block;min-width:80px;"><span style="display:block;">【超期】 ' + record.overdueDays + '天</span><span style="display:block;font-size:10px;opacity:0.9;">Days</span></div></div>';
         } else {
           overdueDisplay = '<div style="display:inline-block;text-align:center;"><div style="background:linear-gradient(135deg,#f39c12,#e67e22);color:white;padding:6px 12px;border-radius:16px;font-weight:600;font-size:12px;box-shadow:0 2px 6px rgba(243,156,18,0.3);display:inline-block;min-width:80px;"><span style="display:block;">' + record.overdueDays + '天</span><span style="display:block;font-size:10px;opacity:0.9;">Days</span></div></div>';
         }

@@ -297,7 +297,7 @@ function generateMergedOwnerEmailContent(allDueSoon, allOverdue) {
   let body = '<div style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;background-color:#f8f9fa;padding:20px;">' +
     '<div style="background:' + bgColor + ';border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;border-left:5px solid ' + accentColor + ';">' +
     '<h2 style="color:' + darkColor + ';text-align:center;margin-bottom:20px;border-bottom:3px solid ' + accentColor + ';padding-bottom:10px;">' +
-    (hasOverdue ? '[逾期提醒] 故障报告跟进项目逾期' : '[临期提醒] 故障报告跟进项目即将到期') + '<br>' +
+    (hasOverdue ? '【逾期提醒】 故障报告跟进项目逾期' : '【临期提醒】 故障报告跟进项目即将到期') + '<br>' +
     '<span style="font-size:0.8em;">' + (hasOverdue ? 'Follow-up Items Overdue Reminder' : 'Follow-up Items Due Soon Reminder') + '</span>' +
     '</h2>' +
     '<p style="font-size:16px;line-height:1.6;color:' + darkColor + ';">' +
@@ -308,14 +308,14 @@ function generateMergedOwnerEmailContent(allDueSoon, allOverdue) {
   if (allOverdue.length > 0) {
     body += '<div style="background:#ffffff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;">' +
       '<h3 style="color:#d32f2f;border-bottom:2px solid #f44336;padding-bottom:10px;margin-bottom:20px;">' +
-      '[逾期] 已逾期跟进项目 Overdue Items (' + allOverdue.length + '条)</h3>' +
+      '【逾期】 已逾期跟进项目 Overdue Items (' + allOverdue.length + '条)</h3>' +
       buildTable(allOverdue, true) + '</div>';
   }
 
   if (allDueSoon.length > 0) {
     body += '<div style="background:#ffffff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;">' +
       '<h3 style="color:#e65100;border-bottom:2px solid #f39c12;padding-bottom:10px;margin-bottom:20px;">' +
-      '[临期] 即将到期跟进项目 Due Soon Items (' + allDueSoon.length + '条)</h3>' +
+      '【临期】 即将到期跟进项目 Due Soon Items (' + allDueSoon.length + '条)</h3>' +
       buildTable(allDueSoon, false) + '</div>';
   }
 
@@ -383,7 +383,7 @@ function generateMergedVerifierEmailContent(allItems) {
   let body = '<div style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;background-color:#f8f9fa;padding:20px;">' +
     '<div style="background:#e8eaf6;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;border-left:5px solid #3f51b5;">' +
     '<h2 style="color:#283593;text-align:center;margin-bottom:20px;border-bottom:3px solid #3f51b5;padding-bottom:10px;">' +
-    '[验证提醒] 故障报告跟进项目待验证<br>' +
+    '【验证提醒】 故障报告跟进项目待验证<br>' +
     '<span style="font-size:0.8em;">Follow-up Items Pending Verification</span>' +
     '</h2>' +
     '<p style="font-size:16px;line-height:1.6;color:#283593;">' +
@@ -392,7 +392,7 @@ function generateMergedVerifierEmailContent(allItems) {
     '</p></div>' +
     '<div style="background:#ffffff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;">' +
     '<h3 style="color:#283593;border-bottom:2px solid #3f51b5;padding-bottom:10px;margin-bottom:20px;">' +
-    '[详情] 待验证跟进项目 Pending Verification Items (' + allItems.length + '条)</h3>';
+    '【详情】 待验证跟进项目 Pending Verification Items (' + allItems.length + '条)</h3>';
 
   for (const email in groups) {
     body += buildPersonSection(email, groups[email]);

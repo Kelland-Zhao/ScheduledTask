@@ -22,7 +22,7 @@ const FAULT_CONFIG = {
   USERID_EMAIL_COL: 9,          // J列 — GMail（复用全局 PERMISSION_EMAIL_COL_IDX）
   USERID_FAULT_PERM_COL: 57,    // BF列 — 故障报告管理权限（Y=有权限）
 
-  EMAIL_SUBJECT_PREFIX: '[故障报告提醒]',
+  EMAIL_SUBJECT_PREFIX: '【故障报告提醒】',
   ADMIN_EMAIL: 'kelland_zhao@colpal.com',
   MAX_ITEMS_IN_EMAIL: 20
 };
@@ -585,7 +585,7 @@ function generateEmailBody(processType, faultItems, pendingReviews) {
 
 function sendErrorNotification(error, trigger) {
   try {
-    var subject = '[系统错误] 故障报告邮件通知系统';
+    var subject = '【系统错误】 故障报告邮件通知系统';
     var body = '故障报告邮件通知系统运行出错:\n\n错误信息: ' + error.message + '\n时间: ' + Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd HH:mm:ss') + '\n\n请检查系统日志。';
 
     GmailApp.sendEmail(FAULT_CONFIG.ADMIN_EMAIL, subject, body);

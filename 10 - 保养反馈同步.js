@@ -94,7 +94,7 @@ function syncMaintenanceFeedbackData(e) {
 
     try {
       GmailApp.sendEmail(FEEDBACK_CONFIG.ADMIN_EMAIL,
-        '[系统错误] 保养反馈同步',
+        '【系统错误】 保养反馈同步',
         '保养反馈同步出错:\n\n错误: ' + error.message + '\n时间: ' + Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd HH:mm:ss')
       );
     } catch (mailError) {

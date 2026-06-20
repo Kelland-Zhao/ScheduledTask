@@ -122,7 +122,7 @@ function checkPointCheckMachines(e) {
     // 6. 发送邮件
     if (recipients.length > 0) {
       const today = formatVariableAsDate(new Date());
-      const subject = "[点检核对] 注塑机台差异报告 " + today;
+      const subject = "【点检核对】 注塑机台差异报告 " + today;
       const html = _pc_buildEmailHtml(type1, type2, today);
 
       try {

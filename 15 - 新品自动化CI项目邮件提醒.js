@@ -335,14 +335,14 @@ function generateMilestoneEmailContent(leaderName, isNewProduct, overdueItems, u
   if (overdueItems.length > 0) {
     body += "\n      <div style='background:#ffffff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;'>" +
       "<h3 style='color:#d32f2f;border-bottom:2px solid #f44336;padding-bottom:10px;margin-bottom:20px;'>" +
-      "[逾期] 已逾期 Overdue Milestones（" + overdueItems.length + "个）</h3>" +
+      "【逾期】 已逾期 Overdue Milestones（" + overdueItems.length + "个）</h3>" +
       buildTable(overdueItems, true) + "</div>";
   }
 
   if (upcomingItems.length > 0) {
     body += "\n      <div style='background:#ffffff;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.1);padding:30px;margin-bottom:20px;'>" +
       "<h3 style='color:#e65100;border-bottom:2px solid #f39c12;padding-bottom:10px;margin-bottom:20px;'>" +
-      "[临期] 即将到期 Upcoming Milestones（" + upcomingItems.length + "个）</h3>" +
+      "【临期】 即将到期 Upcoming Milestones（" + upcomingItems.length + "个）</h3>" +
       buildTable(upcomingItems, false) + "</div>";
   }
 

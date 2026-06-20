@@ -153,7 +153,7 @@ function _cf_sendProcessEmail(proc, rows, userMap, trigger) {
   if (ccAll.indexOf(CF_JUDY_EMAIL) < 0) ccAll.push(CF_JUDY_EMAIL);
   if (ccAll.indexOf(GMAIL_CC) < 0) ccAll.push(GMAIL_CC);
 
-  const subject = '[辅导与反馈提醒] ' + proc + ' 工序 - 待提交 ' + rows.length +
+  const subject = '【辅导与反馈提醒】 ' + proc + ' 工序 - 待提交 ' + rows.length +
     ' 份 | Coaching Form Reminder - ' + proc + ' - ' + rows.length + ' Pending';
   const htmlBody = _cf_buildHtml(proc, rows, notFound);
 

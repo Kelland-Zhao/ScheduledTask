@@ -460,7 +460,7 @@ function _itr_run(options) {
     yesterday: { date: yesterdayDate, records: yesterdayRecords },
     tomorrow: { date: tomorrowDate, records: tomorrowRecords }
   };
-  var subject = (options.testMode ? "[测试] " : "") +
+  var subject = (options.testMode ? "【测试】 " : "") +
     "【注塑测试日报】" + reportDate + " 昨日复盘 & 明日提醒";
   _itr_sendEmail(recipients, subject, _itr_buildEmailHtml(model));
 

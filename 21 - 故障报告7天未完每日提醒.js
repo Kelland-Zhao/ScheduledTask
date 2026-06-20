@@ -158,7 +158,7 @@ function generateDailyOverdueProcessEmailContent(processCode, displayName, recor
     if (records.length > 0) {
       emailBody += '<div style="background-color: #ffffff; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); padding: 30px; margin-bottom: 20px;">' +
         '<h3 style="color: #d32f2f; margin-bottom: 20px; border-bottom: 2px solid #f44336; padding-bottom: 10px;">' +
-        '[详情] 超期未上传故障报告 Overdue Unuploaded Reports (' + records.length + '条)</h3>' +
+        '【详情】 超期未上传故障报告 Overdue Unuploaded Reports (' + records.length + '条)</h3>' +
         '<div style="overflow-x: auto;">' +
         '<table style="width: 100%; border-collapse: collapse; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">' +
         '<thead><tr style="background: linear-gradient(135deg, #f44336 0%, #d32f2f 100%); color: white;">' +

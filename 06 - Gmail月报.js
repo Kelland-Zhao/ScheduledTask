@@ -55,7 +55,7 @@ function sendGmailReports(e) {
     }
 
     const today = formatVariableAsDate(new Date());
-    const subject = "[SmartMeeting Alert] INJ SDM 跟进完成率月报 - " + monthLabel;
+    const subject = "【SmartMeeting Alert】 INJ SDM 跟进完成率月报 - " + monthLabel;
     const html = _buildGmailMergedHtml(groups, pendingItems, today, monthLabel, dateRange);
 
     try {
