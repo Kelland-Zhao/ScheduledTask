@@ -63,6 +63,14 @@ test("_itr_normalizeDate supports Date, ISO, dash, slash and empty values", () =
   assert.equal(gas._itr_normalizeDate(null), "");
 });
 
+test("_itr_normalizeDate converts ISO timestamps across the UTC Shanghai date boundary", () => {
+  const gas = loadModule();
+  assert.equal(
+    gas._itr_normalizeDate("2026-06-18T16:30:00.000Z"),
+    "2026-06-19"
+  );
+});
+
 test("_itr_isSkippedStatus recognizes full production, offline mold and cancelled", () => {
   const gas = loadModule();
   assert.equal(gas._itr_isSkippedStatus("满产"), true);

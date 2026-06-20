@@ -18,7 +18,7 @@ function _itr_normalizeDate(value) {
   }
 
   var text = String(value).trim();
-  var match = text.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  var match = text.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
   if (match) {
     return match[1] + "-" +
       ("0" + match[2]).slice(-2) + "-" +
