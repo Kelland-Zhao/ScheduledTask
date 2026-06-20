@@ -481,6 +481,21 @@ test("_itr_buildEmailHtml renders only populated sections with red bilingual esc
   assert.match(html, /异常 1/);
 });
 
+test("_itr_linkHtml uses safe http text as fallback link and rejects other schemes", () => {
+  const gas = loadModule();
+
+  assert.equal(
+    gas._itr_linkHtml("https://example.com/a?x=1&y=2", ""),
+    '<a href="https://example.com/a?x=1&amp;y=2" style="color:#E60012;text-decoration:none;">https://example.com/a?x=1&amp;y=2</a>'
+  );
+  assert.equal(
+    gas._itr_linkHtml("http://example.com/<sample>", ""),
+    '<a href="http://example.com/&lt;sample&gt;" style="color:#E60012;text-decoration:none;">http://example.com/&lt;sample&gt;</a>'
+  );
+  assert.equal(gas._itr_linkHtml("javascript:alert(1)", ""), "javascript:alert(1)");
+  assert.equal(gas._itr_linkHtml("file:///tmp/test", ""), "file:///tmp/test");
+});
+
 test("_itr_run skips before recipient lookup and Gmail when both date sections are empty", () => {
   let recipientCalls = 0;
   let gmailCalls = 0;
@@ -623,7 +638,7 @@ test("_itr_sendEmail uses configured alias only when available", () => {
   assert.equal(withoutAlias[0].name, "注塑测试日报");
 });
 
-test("sendInjectionTestDailyReport logs scheduled success and manual skip", () => {
+test("sendInjectionTestDailyReport logs scheduled only for explicit scheduled trigger type", () => {
   const logs = [];
   const gas = loadModule({
     writeLog(...args) {
@@ -637,7 +652,7 @@ test("sendInjectionTestDailyReport logs scheduled success and manual skip", () =
     abnormalCount: 1,
     recipients: ["a@example.com"]
   });
-  gas.sendInjectionTestDailyReport({ triggerUid: "scheduled" });
+  gas.sendInjectionTestDailyReport({ triggerType: "scheduled" });
   assert.deepEqual(logs[0].slice(0, 4), [
     "sendInjectionTestDailyReport",
     "成功",
@@ -645,6 +660,22 @@ test("sendInjectionTestDailyReport logs scheduled success and manual skip", () =
     "定时"
   ]);
 
+  gas.sendInjectionTestDailyReport({ triggerUid: "ordinary-event" });
+  assert.deepEqual(logs[1].slice(0, 4), [
+    "sendInjectionTestDailyReport",
+    "成功",
+    "昨日 1 条，明日 2 条，异常 1 条，收件人 1 人",
+    "手动"
+  ]);
+});
+
+test("sendInjectionTestDailyReport logs manual skip without an event", () => {
+  const logs = [];
+  const gas = loadModule({
+    writeLog(...args) {
+      logs.push(args);
+    }
+  });
   gas._itr_run = () => ({
     status: "skipped",
     yesterdayCount: 0,
@@ -652,8 +683,10 @@ test("sendInjectionTestDailyReport logs scheduled success and manual skip", () =
     abnormalCount: 0,
     recipients: []
   });
+
   gas.sendInjectionTestDailyReport();
-  assert.deepEqual(logs[1].slice(0, 4), [
+
+  assert.deepEqual(logs[0].slice(0, 4), [
     "sendInjectionTestDailyReport",
     "跳过",
     "昨日与明日均无测试记录",

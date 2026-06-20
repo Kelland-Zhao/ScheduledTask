@@ -266,8 +266,11 @@ function _itr_cell(record, index) {
 
 function _itr_linkHtml(label, url) {
   var safeLabel = _itr_escapeHtml(label || "查看 / View");
-  if (!url) return safeLabel === "查看 / View" ? "-" : safeLabel;
-  return '<a href="' + _itr_escapeHtml(url) +
+  var linkUrl = String(url || "").trim();
+  var labelUrl = String(label || "").trim();
+  if (!linkUrl && /^https?:\/\//i.test(labelUrl)) linkUrl = labelUrl;
+  if (!linkUrl) return safeLabel === "查看 / View" ? "-" : safeLabel;
+  return '<a href="' + _itr_escapeHtml(linkUrl) +
     '" style="color:#E60012;text-decoration:none;">' + safeLabel + "</a>";
 }
 
@@ -480,7 +483,7 @@ function _itr_execute(functionName, trigger, options) {
 function sendInjectionTestDailyReport(e) {
   return _itr_execute(
     "sendInjectionTestDailyReport",
-    e ? "定时" : "手动",
+    e && e.triggerType === "scheduled" ? "定时" : "手动",
     {}
   );
 }
