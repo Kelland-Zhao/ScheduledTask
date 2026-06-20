@@ -1,0 +1,185 @@
+# 注塑测试合并日报迁移设计
+
+## 1. 目标
+
+将源 GAS 项目 `1kWe4vK4HRXOB-G0x7wYZ9tQcccxaZtigVATPijdKDQwbMo51NteK7MQw` 中的“注塑测试前日报”和“注塑测试后日报”重写并迁移到 ScheduledScripts。
+
+迁移后由 ScheduledScripts 每天 12:00 执行一次，生成并发送一封合并邮件：
+
+- 昨日测试后报告
+- 明日测试前提醒
+
+源数据 Google Sheet ID：
+
+`17ys3UDFWjhfaPnk0TErqqeU0FnMP7nsRoRsTmlmm2fg`
+
+## 2. 业务规则
+
+### 2.1 数据范围
+
+- “昨日测试后报告”读取 `注塑测试` Sheet 中测试日期为前一天的记录。
+- “明日测试前提醒”读取 `注塑测试` Sheet 中测试日期为后一天的记录。
+- 日期统一按 `Asia/Shanghai` 和 `yyyy-MM-dd` 处理。
+- 读取 A:U，共 21 列，并保留源表实际行号，用于生成源记录定位链接。
+
+### 2.2 发送规则
+
+- 昨日有数据、明日有数据：发送一封包含两个模块的合并日报。
+- 仅昨日有数据：只展示“昨日测试后报告”。
+- 仅明日有数据：只展示“明日测试前提醒”。
+- 两个模块均无数据：不发送邮件，仅写入 ScheduledScripts 的 `Log` Sheet。
+- 只要任一模块有数据，即使所有检查项均正常，也发送日报。
+
+### 2.3 测试后检查
+
+检查昨日记录：
+
+- P 列“完成状态”为空：标记“完成状态未维护”。
+- P 列为“已完成”且 R 列“测试记录”为空：标记“无测试记录”。
+- P 列为“满产”“模具不在线”或“取消”：不判定为异常。
+
+### 2.4 测试前检查
+
+检查明日记录：
+
+- L 列“测试机台”为空：标记“测试机台未维护”。
+- O 列“测试负责人”为空：标记“测试负责人未维护”。
+- Q 列“测试样单”为空：标记“测试样单链接未维护”。
+- P 列为“满产”“模具不在线”或“取消”：不判定为异常。
+
+## 3. 收件人
+
+收件人由两部分合并并去重：
+
+1. `通知清单` Sheet 中 B 列包含“测试后日报”或“测试前日报”的 A 列邮箱。
+2. 本次日报记录 M 列“项目负责人”，通过 `Name Database` Sheet 的 A 列姓名匹配 B 列邮箱。
+
+邮箱统一执行 trim、转小写、格式校验和去重。
+
+若最终没有有效收件人：
+
+- 不发送邮件。
+- 写入失败 Log，记录“未找到有效收件人”。
+
+## 4. 代码结构
+
+新增文件：
+
+`31 - 注塑测试日报.js`
+
+唯一生产入口：
+
+`sendInjectionTestDailyReport(e)`
+
+内部函数统一使用 `_itr_` 前缀，主要划分为：
+
+- `_itr_getRecordsByDate`：读取并筛选目标日期记录。
+- `_itr_normalizeDate`：兼容 Date、ISO、`YYYY-MM-DD`、`YYYY/MM/DD` 等日期格式。
+- `_itr_checkAfterProblems`：测试后规则检查。
+- `_itr_checkBeforeProblems`：测试前规则检查。
+- `_itr_getRecipients`：读取通知清单并匹配项目负责人邮箱。
+- `_itr_extractCellLink`：提取普通链接、富文本链接和 Smart Chip 链接。
+- `_itr_buildEmailHtml`：生成合并邮件。
+- `_itr_buildSectionHtml`：生成单个报告模块。
+- `_itr_sendEmail`：发送邮件。
+
+不迁移源文件中的历史调试、Drive 文件名模糊搜索和重复测试函数。
+
+## 5. 邮件设计
+
+邮件使用 ScheduledScripts 风格：
+
+- 主色：Colgate 红 `#E60012`
+- 表头：红色背景、白色文字
+- 中英双语标题
+- 顶部显示报告日期和两类记录数量
+- 昨日、明日分别显示独立模块
+- 异常数量使用红色徽章
+- 正常记录使用绿色状态
+- 异常单元格使用浅红背景突出
+- 表格使用 inline style，保证 Gmail 和 GAS HTML Service 兼容
+
+邮件标题：
+
+`【注塑测试日报】YYYY-MM-DD 昨日复盘 & 明日提醒`
+
+## 6. 文件链接
+
+Q 列测试样单、R 列测试记录按以下优先级解析：
+
+1. 单元格富文本链接。
+2. Sheets v4 Advanced Service 的 Smart Chip URI。
+3. 单元格内直接保存的 URL。
+4. 无法获取链接时，仅显示原始文本。
+
+不再通过文件名全盘搜索 Google Drive，避免误匹配和执行超时。
+
+ScheduledScripts 的 `appsscript.json` 增加 Sheets v4 Advanced Service，保留现有 Drive v3 服务及 OAuth scopes。
+
+## 7. 调度与菜单
+
+ScheduledScripts 配置表增加：
+
+- 定时设置：每天 12:00 执行 `sendInjectionTestDailyReport`
+- 菜单设置：`注塑测试日报-手动` → `sendInjectionTestDailyReport`
+
+触发方式通过参数识别：
+
+- 定时调度：`e.triggerType === "scheduled"`，Log 记为“定时”。
+- 菜单执行：无上述标识，Log 记为“手动”。
+
+## 8. 日志与错误处理
+
+统一调用：
+
+`writeLog(funcName, status, detail, trigger, remark)`
+
+记录场景：
+
+- 成功：发送成功、昨日记录数、明日记录数、异常数、收件人数。
+- 跳过：昨日和明日均无测试记录。
+- 失败：数据源或 Sheet 不存在、收件人为空、邮件发送失败。
+
+入口函数捕获异常、写入 Log 后重新抛出，确保 GAS 执行记录显示失败。
+
+## 9. 测试与切换
+
+### 9.1 测试
+
+增加安全测试入口：
+
+`testInjectionTestDailyReport()`
+
+测试入口：
+
+- 使用与生产相同的数据读取和 HTML 生成逻辑。
+- 强制只发送给 `kelland_zhao@colpal.com`。
+- 邮件标题增加 `[测试]`。
+- 不读取生产通知清单作为收件人。
+
+验证内容：
+
+- 昨日和明日两个模块均正确展示。
+- 日期筛选正确。
+- 异常判定正确。
+- Smart Chip/富文本链接可点击。
+- 邮件在 Gmail 中显示正常。
+- Log 正确记录。
+
+### 9.2 上线切换
+
+1. 提交 ScheduledScripts 本地改动。
+2. `clasp push` 到 ScheduledScripts GAS 项目。
+3. 运行测试入口并确认测试邮件。
+4. 在 ScheduledScripts 配置表启用每天 12:00 的新任务。
+5. 停用源 GAS 项目的 `testAfterReport` 10:30 和 `testBeforeReport` 15:30 定时任务。
+6. 检查两个项目的触发器，确认不存在重复发送路径。
+
+源项目中的其他定时任务和代码不做修改。
+
+## 10. 文档与版本
+
+- 实施完成后更新 `docs/项目记录.md`。
+- 版本命名遵循 `VYYYYMMDD.序号`。
+- Git commit 使用中文 `类型: 简短描述` 格式。
+
