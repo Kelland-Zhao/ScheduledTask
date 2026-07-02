@@ -156,6 +156,28 @@ function extractWorkshop(sheetName) {
   return '';
 }
 
+// ========== 工具函数 ==========
+
+/** 对齐 EDS: 支持 "X小时Y分钟" 中文格式的维修时间解析 */
+function _parseRepairTime(raw) {
+  if (raw == null || raw === '') return 0;
+  var str = String(raw);
+  var num = Number(str);
+  if (!isNaN(num)) return num; // 纯数字，直接返回
+  // 处理 "3小时20分钟" 等中文格式
+  var total = 0;
+  var hourMatch = str.match(/(\d+)\s*小时/);
+  if (hourMatch) total += parseInt(hourMatch[1], 10) * 60;
+  var minMatch = str.match(/(\d+)\s*分钟/);
+  if (minMatch) total += parseInt(minMatch[1], 10);
+  // 兜底：提取所有数字
+  if (total === 0) {
+    var digits = str.match(/(\d+)/g);
+    if (digits) total = parseInt(digits[0], 10);
+  }
+  return total;
+}
+
 // ========== 筛选逻辑 ==========
 
 function filterQualifiedFaultItems(faultItems) {
@@ -164,7 +186,8 @@ function filterQualifiedFaultItems(faultItems) {
       if (!(item.processType in FAULT_CONFIG.PROCESS_THRESHOLDS)) return false;
 
       const threshold = FAULT_CONFIG.PROCESS_THRESHOLDS[item.processType];
-      const repairTime = Number(item.repairTime) || 0;
+      // 对齐 EDS: 支持 "X小时Y分钟" 中文格式解析
+      var repairTime = _parseRepairTime(item.repairTime);
       if (repairTime < threshold) return false;
 
       if (item.needFaultReport !== '' && item.needFaultReport != null) return false;
@@ -175,10 +198,12 @@ function filterQualifiedFaultItems(faultItems) {
 
       // PK / TF 工序专属规则（对齐 EDS FailureReport_Manage）
       if (item.processType === 'PK' || item.processType === 'TF') {
-        // 提交日期必须 ≥ 2026-05-15
+        // TF: 提交日期 > 2026-05-31（前端过滤，L686）
+        // PK: 提交日期 ≥ 2026-05-15（后端 getFilteredFailureReportData，L7462）
         if (item.submitDate) {
           var submitDateObj = new Date(item.submitDate);
-          if (submitDateObj < new Date('2026-05-15')) return false;
+          var cutoff = item.processType === 'TF' ? new Date('2026-06-01') : new Date('2026-05-15');
+          if (submitDateObj < cutoff) return false;
         }
         // 排除"转规格"问题
         var problemDesc = String(item.problemDesc || '');
