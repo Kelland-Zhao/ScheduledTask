@@ -247,7 +247,8 @@ function _getPendingReviewReports() {
     var reports = [];
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
-      if (String(row[idxReviewStatus] || '').trim() === '已完成') continue;
+      var reviewStatus = String(row[idxReviewStatus] || "").trim();
+      if (!reviewStatus || reviewStatus === "已完成") continue;
       reports.push({
         id: row[headers.indexOf('编号')] || '',
         machineId: row[headers.indexOf('机台号')] || '',
