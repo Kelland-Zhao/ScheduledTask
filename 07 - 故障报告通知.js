@@ -253,7 +253,7 @@ function _getPendingReviewReports() {
         id: row[headers.indexOf('编号')] || '',
         machineId: row[headers.indexOf('机台号')] || '',
         description: row[headers.indexOf('问题描述')] || '',
-        process: row[headers.indexOf('工序')] || '',
+        process: (function(p) { return p === 'IM' ? 'INJ' : p; })(row[headers.indexOf('工序')] || ''),
         reportNumber: row[headers.indexOf('故障报告编号')] || '',
         owner: String(row[headers.indexOf('责任人')] || '').trim(),
         reviewer: String(row[headers.indexOf('审核人 / Reviewed By')] || '').trim(),
