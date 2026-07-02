@@ -1,4 +1,4 @@
-// V20260608.2 — 故障报告邮件通知模块
+﻿// V20260608.2 — 故障报告邮件通知模块
 // 功能：自动检测交接班模块故障条目，对超时且未填写故障报告的条目发送邮件通知
 // 变更：收件人从"通知清单"切换为 userID 表动态过滤
 
@@ -27,7 +27,7 @@ const FAULT_CONFIG = {
   MAX_ITEMS_IN_EMAIL: 20
 };
 
-// 故障报告数据库（待审核数据源）
+// 故障报告数据库（处理中报告数据源，非终态=已完成）
 const FR_DATABASE_ID = '1YAPdZKVEOHgCGIJRQwWTQBmwaWIS4yd1SQKJJfRCtAU';
 const FR_DATABASE_SHEET = 'Failure_Database';
 
@@ -247,7 +247,7 @@ function _getPendingReviewReports() {
     var reports = [];
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
-      if (String(row[idxReviewStatus] || '').trim() !== '主管审核中') continue;
+      if (String(row[idxReviewStatus] || '').trim() === '已完成') continue;
       reports.push({
         id: row[headers.indexOf('编号')] || '',
         machineId: row[headers.indexOf('机台号')] || '',
@@ -256,10 +256,10 @@ function _getPendingReviewReports() {
         reportNumber: row[headers.indexOf('故障报告编号')] || '',
         owner: String(row[headers.indexOf('责任人')] || '').trim(),
         reviewer: String(row[headers.indexOf('审核人 / Reviewed By')] || '').trim(),
-        reviewStatus: '主管审核中'
+        reviewStatus: reviewStatus
       });
     }
-    console.log('待审核故障报告: ' + reports.length + ' 条');
+    console.log('处理中故障报告（非已完成）: ' + reports.length + ' 条');
     return reports;
   } catch (e) {
     console.error('读取待审核报告失败: ' + e.message);
@@ -430,7 +430,7 @@ function sendProcessEmail(processType, faultItems, recipients, trigger, pendingR
       try {
         GmailApp.sendEmail(recipient, subject, '', { htmlBody: body, cc: ccUnique.join(',') });
         console.log('成功发送邮件给: ' + recipient);
-        writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，故障=' + faultItems.length + ' 待审核=' + (pendingReviews ? pendingReviews.length : 0), trigger, processType);
+        writeLog('sendProcessEmail', '成功', '已发送至 ' + recipient + '，故障=' + faultItems.length + ' 处理中=' + (pendingReviews ? pendingReviews.length : 0), trigger, processType);
       } catch (emailError) {
         console.error('发送邮件给 ' + recipient + ' 时出错:', emailError);
         writeLog('sendProcessEmail', '失败', '发送至 ' + recipient + ' 失败: ' + emailError.message, trigger, processType);
@@ -451,7 +451,7 @@ function generateEmailSubject(processType, faultItems, pendingCount) {
   var date = Utilities.formatDate(new Date(), currentTimeZone, 'yyyy-MM-dd');
   var parts = [];
   if (faultItems.length > 0) parts.push(faultItems.length + '个故障待判断');
-  if (pendingCount > 0) parts.push(pendingCount + '个故障报告待审核');
+  if (pendingCount > 0) parts.push(pendingCount + '个故障报告处理中');
   var detail = parts.length > 0 ? parts.join('和') : '无待处理项';
   return FAULT_CONFIG.EMAIL_SUBJECT_PREFIX + ' ' + date + ' - ' + displayName + '工序发现' + detail;
 }
@@ -461,6 +461,16 @@ function generateEmailSubject(processType, faultItems, pendingCount) {
 function getProcessDisplayName(processType) {
   var names = { 'INJ': '注塑', 'TF': '植磨毛', 'PK': '包装' };
   return names[processType] || processType;
+}
+
+function _getReviewStatusBadgeClass(reviewStatus) {
+  var map = {
+    '待提交': 'status-pending-submit',
+    '主管审核中': 'status-reviewing',
+    '已退回': 'status-rejected',
+    '审核通过': 'status-approved'
+  };
+  return map[reviewStatus] || 'review-badge';
 }
 
 function getProcessDisplayNameEn(processType) {
@@ -501,6 +511,10 @@ function generateEmailBody(processType, faultItems, pendingReviews) {
   html += '.review-table tr:hover{background-color:#fff8e1}';
   html += '.repair-time{color:#E60012;font-weight:bold}';
   html += '.status-badge{background:#FF6B6B;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
+  html += '.status-pending-submit{background:#95a5a6;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
+  html += '.status-reviewing{background:#f39c12;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
+  html += '.status-rejected{background:#e74c3c;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
+  html += '.status-approved{background:#27ae60;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
   html += '.review-badge{background:#f39c12;color:white;padding:4px 8px;border-radius:12px;font-size:12px}';
   html += '.footer{text-align:center;margin-top:40px;color:#666;font-size:12px}';
   html += '@media(max-width:768px){.fault-table,.review-table{font-size:12px}.fault-table th,.fault-table td,.review-table th,.review-table td{padding:6px 4px}.cards{flex-direction:column}}';
@@ -514,7 +528,7 @@ function generateEmailBody(processType, faultItems, pendingReviews) {
   // ===== 两张卡片 =====
   html += '<div class="cards">';
   html += '<div class="card"><div class="card-value" style="color:#E60012">' + totalCount + '</div><div class="card-label">待分配故障报告<br>Pending Fault Reports</div></div>';
-  html += '<div class="card"><div class="card-value" style="color:#f39c12">' + pendingCount + '</div><div class="card-label">待审核故障报告<br>Pending Review Reports</div></div>';
+  html += '<div class="card"><div class="card-value" style="color:#f39c12">' + pendingCount + '</div><div class="card-label">处理中故障报告<br>Pending Review Reports</div></div>';
   html += '</div>';
 
   if (omittedCount > 0) {
@@ -553,7 +567,7 @@ function generateEmailBody(processType, faultItems, pendingReviews) {
   // ===== 待审核故障报告 =====
   if (pendingCount > 0) {
     html += '<div class="table-container">';
-    html += '<h2 style="margin-top:0;color:#e67e22">【待审核故障报告】Pending Review Reports (' + pendingCount + '条)</h2>';
+    html += '<h2 style="margin-top:0;color:#e67e22">【处理中故障报告】Pending Review Reports (' + pendingCount + '条)</h2>';
     html += '<table class="review-table"><thead><tr>';
     html += '<th>编号<br>ID</th><th>机台号<br>Machine No.</th><th>问题描述<br>Problem Description</th><th>责任人<br>Owner</th><th>故障报告编号<br>Report No.</th><th>审核人<br>Reviewer</th><th>状态<br>Status</th>';
     html += '</tr></thead><tbody>';
@@ -566,7 +580,7 @@ function generateEmailBody(processType, faultItems, pendingReviews) {
       html += '<td>' + (r.owner || '-') + '</td>';
       html += '<td>' + (r.reportNumber || '-') + '</td>';
       html += '<td>' + (r._supervisorName || r.reviewer || '-') + '</td>';
-      html += '<td><span class="review-badge">' + r.reviewStatus + '</span></td>';
+      html += '<td><span class="' + _getReviewStatusBadgeClass(r.reviewStatus) + '">' + r.reviewStatus + '</span></td>';
       html += '</tr>';
     });
 
