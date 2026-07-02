@@ -178,6 +178,17 @@ function _parseRepairTime(raw) {
   return total;
 }
 
+/** 将 Date 对象或日期字符串格式化为 YYYY-MM-DD，用于字符串比较（避免时区偏差） */
+function _formatDateStr(raw) {
+  if (!raw) return '';
+  var d = raw instanceof Date ? raw : new Date(raw);
+  if (isNaN(d.getTime())) return '';
+  var yyyy = d.getFullYear();
+  var mm = String(d.getMonth() + 1).padStart(2, '0');
+  var dd = String(d.getDate()).padStart(2, '0');
+  return yyyy + '-' + mm + '-' + dd;
+}
+
 // ========== 筛选逻辑 ==========
 
 function filterQualifiedFaultItems(faultItems) {
@@ -198,21 +209,17 @@ function filterQualifiedFaultItems(faultItems) {
 
       // PK / TF 工序专属规则（对齐 EDS FailureReport_Manage）
       if (item.processType === 'PK' || item.processType === 'TF') {
-        // TF: 提交日期 > 2026-05-31（前端过滤，L686）
+        // TF: 提交日期 > 2026-05-31（前端过滤，L686），使用 YYYY-MM-DD 字符串比较避免时区偏差
         // PK: 提交日期 ≥ 2026-05-15（后端 getFilteredFailureReportData，L7462）
         if (item.submitDate) {
-          var submitDateObj = new Date(item.submitDate);
-          var cutoff = item.processType === 'TF' ? new Date('2026-06-01') : new Date('2026-05-15');
-          if (submitDateObj < cutoff) return false;
+          var dateStr = _formatDateStr(item.submitDate);
+          var cutoff = item.processType === 'TF' ? '2026-06-01' : '2026-05-15';
+          // TF: > 即 >= '2026-06-01'; PK: >= '2026-05-15'
+          if (dateStr < cutoff) return false;
         }
-        // 排除"转规格"问题
+        // 排除问题描述中含"转规格"（仅检查 problemDesc，对齐 EDS 行为）
         var problemDesc = String(item.problemDesc || '');
         if (problemDesc.indexOf('转规格') !== -1) return false;
-        // TF 额外排除处理过程中含"转规格"
-        if (item.processType === 'TF') {
-          var processDesc = String(item.process || '');
-          if (processDesc.indexOf('转规格') !== -1) return false;
-        }
       }
 
       return true;
