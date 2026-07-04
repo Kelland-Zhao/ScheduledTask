@@ -59,8 +59,12 @@ function sendUnifiedFaultReportDaily(e) {
     unuploadedReports.sort(function(a, b) { return b.overdueDays - a.overdueDays; });
     console.log('Section C 未上传: ' + unuploadedReports.length + ' 条');
 
+    // Section D: 未关闭报告（有跟进项未全部"已通过"的报告）
     var followUpData = _ur_getFollowUpData();
-    console.log('Section D 跟进项: ' + followUpData.length + ' 条');
+    var reportNoToRecord = {};  // reportNo → Failure_Database record
+    allReports.forEach(function(r) { if (r.reportNumber) reportNoToRecord[r.reportNumber] = r; });
+    var unclosedReports = _ur_buildUnclosedReports(followUpData, reportNoToRecord);
+    console.log('Section D 未关闭报告: ' + unclosedReports.length + ' 条');
 
     // 2. 读取 userID 映射
     var userMaps = getUserIDLookupMaps();
@@ -72,7 +76,7 @@ function sendUnifiedFaultReportDaily(e) {
 
     // 3. 按工序归类
     var processMap = _ur_buildProcessPayloads(
-      faultItems, pendingReviews, unuploadedReports, followUpData, reportNoToProcess
+      faultItems, pendingReviews, unuploadedReports, unclosedReports
     );
     var processesWithData = Object.keys(processMap);
     console.log('工序归类完成: [' + processesWithData.join(', ') + ']');
@@ -305,25 +309,38 @@ function _ur_getFollowUpData() {
   }
 }
 
-/** 距离截止日期的天数（负=逾期） */
-function _ur_calcDaysUntilDue(dueDate) {
-  try {
-    var due = (dueDate instanceof Date) ? new Date(dueDate) : new Date(dueDate);
-    if (isNaN(due.getTime())) return 999;
-    due.setHours(0, 0, 0, 0);
-    var today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return Math.round((due - today) / (1000 * 3600 * 24));
-  } catch (e) {
-    return 999;
-  }
-}
+/** 从跟进项数据构建未关闭报告列表（有未"已通过"跟进项的报告） */
+function _ur_buildUnclosedReports(followUpData, reportNoToRecord) {
+  // 按 reportNo 汇总
+  var summary = {};
+  followUpData.forEach(function(item) {
+    var rptNo = item.reportNo;
+    if (!rptNo) return;
+    if (!summary[rptNo]) summary[rptNo] = { total: 0, open: 0 };
+    summary[rptNo].total++;
+    if (item.status.indexOf('已通过') === -1) summary[rptNo].open++;
+  });
 
-/** 格式化跟进项日期 */
-function _ur_formatFollowUpDate(value) {
-  if (!value) return '';
-  var d = (value instanceof Date) ? value : new Date(value);
-  return isNaN(d.getTime()) ? String(value) : formatVariableAsDate(d);
+  // 筛选未关闭的，join Failure_Database 获取机台/描述/责任人
+  var result = [];
+  for (var rptNo in summary) {
+    if (summary[rptNo].open === 0) continue;
+    var rec = reportNoToRecord[rptNo] || {};
+    result.push({
+      reportNo: rptNo,
+      machineId: rec.machineId || '',
+      description: rec.description || '',
+      owner: rec.owner || '',
+      process: mapFailureProcessToUserID(rec.process || ''),
+      totalFollowUps: summary[rptNo].total,
+      openFollowUps: summary[rptNo].open
+    });
+  }
+
+  // 按未关闭跟进项数降序
+  result.sort(function(a, b) { return b.openFollowUps - a.openFollowUps; });
+  console.log('未关闭报告: ' + result.length + ' 条');
+  return result;
 }
 
 // ========== 工序归类引擎 ==========
@@ -333,9 +350,7 @@ function _ur_hasAnyItems(payload) {
   return payload.sections.A.length > 0 ||
          payload.sections.B.length > 0 ||
          payload.sections.C.length > 0 ||
-         payload.sections.D_owner.dueSoon.length > 0 ||
-         payload.sections.D_owner.overdue.length > 0 ||
-         payload.sections.D_verifier.length > 0;
+         payload.sections.D_unclosed.length > 0;
 }
 
 /** 创建空的工序 payload */
@@ -343,7 +358,7 @@ function _ur_emptyProcessPayload(proc) {
   return {
     process: proc,
     displayName: PROCESS_DISPLAY_NAMES[proc] || proc,
-    sections: { A: [], B: [], C: [], D_owner: { dueSoon: [], overdue: [] }, D_verifier: [] }
+    sections: { A: [], B: [], C: [], D_unclosed: [] }
   };
 }
 
@@ -351,7 +366,7 @@ function _ur_emptyProcessPayload(proc) {
  * 核心函数：按工序归类所有待处理项
  * 返回 { 'INJ': ProcessPayload, 'TF': ProcessPayload, 'PK': ProcessPayload }
  */
-function _ur_buildProcessPayloads(faultItems, pendingReviews, unuploadedReports, followUpData, reportNoToProcess) {
+function _ur_buildProcessPayloads(faultItems, pendingReviews, unuploadedReports, unclosedReports) {
   var processes = ['INJ', 'TF', 'PK'];
   var processMap = {};
   processes.forEach(function(proc) {
@@ -376,20 +391,10 @@ function _ur_buildProcessPayloads(faultItems, pendingReviews, unuploadedReports,
     if (processMap[proc]) processMap[proc].sections.C.push(report);
   });
 
-  // Section D: 按 reportNo → process 解析工序
-  followUpData.forEach(function(item) {
-    var status = item.status || '';
-    if (status.indexOf('已通过') !== -1) return;
-    var proc = reportNoToProcess[item.reportNo];
-    if (!proc || !processMap[proc]) return;
-    var days = _ur_calcDaysUntilDue(item.dueDate);
-    if (status.indexOf('未通过') !== -1 || status.indexOf('NA') !== -1) {
-      if (days < 0) processMap[proc].sections.D_owner.overdue.push(item);
-      else if (days <= 2) processMap[proc].sections.D_owner.dueSoon.push(item);
-    }
-    if (status.indexOf('未验证') !== -1) {
-      processMap[proc].sections.D_verifier.push(item);
-    }
+  // Section D: 未关闭报告（已含 process 字段）
+  unclosedReports.forEach(function(rpt) {
+    var proc = rpt.process;
+    if (processMap[proc]) processMap[proc].sections.D_unclosed.push(rpt);
   });
 
   // 过滤无事项的工序
@@ -407,8 +412,7 @@ function _ur_buildProcessPayloads(faultItems, pendingReviews, unuploadedReports,
 /** 动态主题行（Per-Process） */
 function _ur_generateSubject(payload, isTest) {
   var date = formatVariableAsDate(new Date());
-  var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; }) ||
-                   payload.sections.D_owner.overdue.length > 0;
+  var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; });
   var prefix = isTest ? '【测试】' : '';
   var displayName = payload.displayName;
   var proc = payload.process;
@@ -424,9 +428,8 @@ function _ur_generateBody(payload) {
   var displayName = payload.displayName;
   var proc = payload.process;
 
-  // 主体颜色主题：根据是否有逾期决定（Section C ≥7天 或 Section D 逾期项）
-  var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; }) ||
-                   payload.sections.D_owner.overdue.length > 0;
+  // 主体颜色主题：Section C 是否有 ≥7天 的项
+  var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; });
 
   // ===== 头部（Mode A） =====
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
@@ -460,11 +463,9 @@ function _ur_generateBody(payload) {
     html += _ur_buildSectionC(payload.sections.C);
   }
 
-  // ===== Section D: 跟进项 =====
-  var dOwnerItems = payload.sections.D_owner.dueSoon.concat(payload.sections.D_owner.overdue);
-  var dVerifierItems = payload.sections.D_verifier;
-  if (dOwnerItems.length > 0 || dVerifierItems.length > 0) {
-    html += _ur_buildSectionD(payload.sections.D_owner, payload.sections.D_verifier);
+  // ===== Section D: 未关闭报告 =====
+  if (payload.sections.D_unclosed.length > 0) {
+    html += _ur_buildSectionD(payload.sections.D_unclosed);
   }
 
   html += '</div>';
@@ -487,9 +488,9 @@ function _ur_buildSummaryCards(payload) {
     { label: '故障待判断<br><span style="font-size:10px;opacity:0.8;">Faults Pending</span>', value: payload.sections.A.length, color: '#E60012' },
     { label: '处理中报告<br><span style="font-size:10px;opacity:0.8;">In Review</span>', value: payload.sections.B.length, color: '#f39c12' },
     { label: '未上传<br><span style="font-size:10px;opacity:0.8;">Unuploaded</span>', value: payload.sections.C.length, color: payload.sections.C.length > 0 ? '#e74c3c' : '#2c3e50' },
-    { label: '跟进项<br><span style="font-size:10px;opacity:0.8;">Follow-ups</span>',
-      value: payload.sections.D_owner.dueSoon.length + payload.sections.D_owner.overdue.length + payload.sections.D_verifier.length,
-      color: payload.sections.D_owner.overdue.length > 0 ? '#e74c3c' : '#2c3e50' }
+    { label: '未关闭报告<br><span style="font-size:10px;opacity:0.8;">Unclosed</span>',
+      value: payload.sections.D_unclosed.length,
+      color: payload.sections.D_unclosed.length > 0 ? '#e74c3c' : '#2c3e50' }
   ];
 
   var html = '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:24px;"><tr>';
@@ -672,93 +673,33 @@ function _ur_buildSectionC(items) {
   return html;
 }
 
-function _ur_buildSectionD(dOwner, dVerifier) {
-  var dueSoon = dOwner.dueSoon || [];
-  var overdue = dOwner.overdue || [];
-  var verifierItems = dVerifier || [];
-  var totalOwner = dueSoon.length + overdue.length;
-  var totalD = totalOwner + verifierItems.length;
+function _ur_buildSectionD(items) {
   var maxShow = _UR_CONFIG.MAX_ITEMS_PER_SECTION;
+  var display = items.slice(0, maxShow);
+  var headers = [
+    '故障报告编号<br><span style="font-size:0.8em;opacity:0.9;">Report No.</span>',
+    '机台号<br><span style="font-size:0.8em;opacity:0.9;">Machine</span>',
+    '问题描述<br><span style="font-size:0.8em;opacity:0.9;">Description</span>',
+    '责任人<br><span style="font-size:0.8em;opacity:0.9;">Owner</span>',
+    '跟进项进度<br><span style="font-size:0.8em;opacity:0.9;">Progress</span>'
+  ];
 
-  var html = _ur_buildSectionTitle('四', '跟进项', 'Follow-up Items', totalD, '#3f51b5');
-
-  // D1: 逾期项
-  if (overdue.length > 0) {
-    var display = overdue.slice(0, maxShow);
-    var ownerHeaders = [
-      '故障报告编号<br><span style="font-size:0.8em;opacity:0.9;">Report No.</span>',
-      '预防行动<br><span style="font-size:0.8em;opacity:0.9;">Action Plan</span>',
-      '期限<br><span style="font-size:0.8em;opacity:0.9;">Due Date</span>',
-      '状态<br><span style="font-size:0.8em;opacity:0.9;">Status</span>',
-      '逾期天数<br><span style="font-size:0.8em;opacity:0.9;">Overdue Days</span>'
+  var rows = display.map(function(rpt) {
+    var closed = rpt.totalFollowUps - rpt.openFollowUps;
+    var progressText = closed + '/' + rpt.totalFollowUps + ' 已关闭';
+    var progressColor = rpt.openFollowUps > 0 ? '#e74c3c' : '#27ae60';
+    return [
+      _ur_escapeHtml(rpt.reportNo || '-'),
+      _ur_escapeHtml(rpt.machineId || '-'),
+      '<span style="word-wrap:break-word;">' + _ur_escapeHtml(rpt.description || '-') + '</span>',
+      _ur_escapeHtml(extractNameFromPersonField(rpt.owner) || '-'),
+      '<span style="color:' + progressColor + ';font-weight:600;">' + progressText + '</span>'
     ];
-    var rows = display.map(function(item) {
-      return [
-        _ur_escapeHtml(item.reportNo || '-'),
-        '<span style="word-wrap:break-word;">' + _ur_escapeHtml(item.paPlan || '-') + '</span>',
-        _ur_formatFollowUpDate(item.dueDate) || '-',
-        _ur_escapeHtml(item.status || '-'),
-        _ur_buildBadge(_ur_calcDaysUntilDue(item.dueDate), true)
-      ];
-    });
-    html += '<h4 style="color:#d32f2f;margin:16px 0 8px;border-bottom:1px solid #f44336;padding-bottom:6px;">' +
-      '【逾期】已逾期跟进项 Overdue Items (' + overdue.length + '条)</h4>';
-    html += _ur_buildTable(ownerHeaders, rows, 'linear-gradient(135deg,#e74c3c,#c0392b)', '#fff5f5');
-    html += _ur_buildTruncationNote(overdue.length, maxShow);
-  }
+  });
 
-  // D2: 临期项
-  if (dueSoon.length > 0) {
-    var display = dueSoon.slice(0, maxShow);
-    var soonHeaders = [
-      '故障报告编号<br><span style="font-size:0.8em;opacity:0.9;">Report No.</span>',
-      '预防行动<br><span style="font-size:0.8em;opacity:0.9;">Action Plan</span>',
-      '期限<br><span style="font-size:0.8em;opacity:0.9;">Due Date</span>',
-      '状态<br><span style="font-size:0.8em;opacity:0.9;">Status</span>',
-      '剩余天数<br><span style="font-size:0.8em;opacity:0.9;">Days Left</span>'
-    ];
-    var rows = display.map(function(item) {
-      return [
-        _ur_escapeHtml(item.reportNo || '-'),
-        '<span style="word-wrap:break-word;">' + _ur_escapeHtml(item.paPlan || '-') + '</span>',
-        _ur_formatFollowUpDate(item.dueDate) || '-',
-        _ur_escapeHtml(item.status || '-'),
-        _ur_buildBadge(_ur_calcDaysUntilDue(item.dueDate), false)
-      ];
-    });
-    html += '<h4 style="color:#e65100;margin:16px 0 8px;border-bottom:1px solid #f39c12;padding-bottom:6px;">' +
-      '【临期】即将到期跟进项 Due Soon Items (' + dueSoon.length + '条)</h4>';
-    html += _ur_buildTable(soonHeaders, rows, 'linear-gradient(135deg,#f39c12,#e67e22)', '#fffbf0');
-    html += _ur_buildTruncationNote(dueSoon.length, maxShow);
-  }
-
-  // D3: 待验证项
-  if (verifierItems.length > 0) {
-    var display = verifierItems.slice(0, maxShow);
-    var verifierHeaders = [
-      '跟进编号<br><span style="font-size:0.8em;opacity:0.9;">Follow-up ID</span>',
-      '故障报告编号<br><span style="font-size:0.8em;opacity:0.9;">Report No.</span>',
-      '预防行动<br><span style="font-size:0.8em;opacity:0.9;">Action Plan</span>',
-      '责任人<br><span style="font-size:0.8em;opacity:0.9;">Owner</span>',
-      '期限<br><span style="font-size:0.8em;opacity:0.9;">Due Date</span>',
-      '状态<br><span style="font-size:0.8em;opacity:0.9;">Status</span>'
-    ];
-    var rows = display.map(function(item) {
-      return [
-        _ur_escapeHtml(item.id || '-'),
-        _ur_escapeHtml(item.reportNo || '-'),
-        '<span style="word-wrap:break-word;">' + _ur_escapeHtml(item.paPlan || '-') + '</span>',
-        _ur_escapeHtml(extractNameFromPersonField(item.owner) || '-'),
-        _ur_formatFollowUpDate(item.dueDate) || '-',
-        _ur_escapeHtml(item.status || '-')
-      ];
-    });
-    html += '<h4 style="color:#283593;margin:16px 0 8px;border-bottom:1px solid #3f51b5;padding-bottom:6px;">' +
-      '【待验证】待验证跟进项 Pending Verification (' + verifierItems.length + '条)</h4>';
-    html += _ur_buildTable(verifierHeaders, rows, 'linear-gradient(135deg,#3f51b5,#283593)', '#f0f4ff');
-    html += _ur_buildTruncationNote(verifierItems.length, maxShow);
-  }
-
+  var html = _ur_buildSectionTitle('四', '未关闭报告', 'Unclosed Reports', items.length, '#3f51b5');
+  html += _ur_buildTable(headers, rows, 'linear-gradient(135deg,#3f51b5,#283593)', '#f0f4ff');
+  html += _ur_buildTruncationNote(items.length, maxShow);
   return html;
 }
 
@@ -797,22 +738,15 @@ function _ur_getProcessRecipients(payload, nameToUser, processToAdmins) {
     }
   });
 
-  // TO: Section D 责任人 + CC: Line Manager
-  var allFollowUpItems = payload.sections.D_owner.dueSoon.concat(payload.sections.D_owner.overdue);
-  allFollowUpItems.forEach(function(item) {
-    var email = extractEmailFromPersonField(item.owner);
-    var name = extractNameFromPersonField(item.owner);
+  // TO: Section D 未关闭报告的责任人 + CC: Line Manager
+  payload.sections.D_unclosed.forEach(function(rpt) {
+    var email = extractEmailFromPersonField(rpt.owner);
+    var name = extractNameFromPersonField(rpt.owner);
     if (email) toSet[email] = true;
     if (name) {
       var user = nameToUser[name];
       if (user && user.lineManager) ccSet[user.lineManager] = true;
     }
-  });
-
-  // TO: Section D 验证人
-  payload.sections.D_verifier.forEach(function(item) {
-    var email = extractEmailFromPersonField(item.verifier);
-    if (email) toSet[email] = true;
   });
 
   // CC: 工序管理员（已在 TO 中的跳过）
@@ -863,7 +797,7 @@ function _ur_sendProcessEmails(processMap, userMaps, trigger) {
       if (payload.sections.A.length > 0) sectionsDesc.push('A:' + payload.sections.A.length);
       if (payload.sections.B.length > 0) sectionsDesc.push('B:' + payload.sections.B.length);
       if (payload.sections.C.length > 0) sectionsDesc.push('C:' + payload.sections.C.length);
-      var dTotal = payload.sections.D_owner.dueSoon.length + payload.sections.D_owner.overdue.length + payload.sections.D_verifier.length;
+      var dTotal = payload.sections.D_unclosed.length;
       if (dTotal > 0) sectionsDesc.push('D:' + dTotal);
 
       console.log('✅ ' + proc + ' 综合日报已发送 → TO:' + recipients.to.length + '人 CC:' + (ccList.length) + '人 (' + sectionsDesc.join(', ') + ')');
