@@ -322,9 +322,15 @@ function _ur_buildUnclosedReports(followUpData, reportNoToRecord) {
   followUpData.forEach(function(item) {
     var rptNo = item.reportNo;
     if (!rptNo) return;
-    if (!summary[rptNo]) summary[rptNo] = { total: 0, open: 0 };
+    if (!summary[rptNo]) summary[rptNo] = { total: 0, open: 0, ownerEmails: {}, verifierEmails: {} };
     summary[rptNo].total++;
-    if (item.status.indexOf('已通过') === -1) summary[rptNo].open++;
+    if (item.status.indexOf('已通过') === -1) {
+      summary[rptNo].open++;
+      var oEmail = extractEmailFromPersonField(item.owner);
+      if (oEmail) summary[rptNo].ownerEmails[oEmail] = true;
+      var vEmail = extractEmailFromPersonField(item.verifier);
+      if (vEmail) summary[rptNo].verifierEmails[vEmail] = true;
+    }
   });
 
   // 筛选未关闭的，join Failure_Database 获取机台/描述/责任人
@@ -339,7 +345,9 @@ function _ur_buildUnclosedReports(followUpData, reportNoToRecord) {
       owner: rec.owner || '',
       process: mapFailureProcessToUserID(rec.process || ''),
       totalFollowUps: summary[rptNo].total,
-      openFollowUps: summary[rptNo].open
+      openFollowUps: summary[rptNo].open,
+      ownerEmails: Object.keys(summary[rptNo].ownerEmails),
+      verifierEmails: Object.keys(summary[rptNo].verifierEmails)
     });
   }
 
@@ -801,20 +809,38 @@ function _ur_getProcessRecipients(payload, nameToUser, processToAdmins) {
     }
   });
 
-  // TO: Section D 未关闭报告的责任人 + CC: Line Manager
+  // TO: Section D 未关闭报告的责任人+验证人 / CC: BI列直线上级
   payload.sections.D_unclosed.forEach(function(rpt) {
-    var email = extractEmailFromPersonField(rpt.owner);
-    var name = extractNameFromPersonField(rpt.owner);
-    if (email) toSet[email] = true;
-    if (name) {
-      var user = nameToUser[name];
-      if (user && user.lineManager) ccSet[user.lineManager] = true;
+    // TO: 责任人
+    var oEmail = extractEmailFromPersonField(rpt.owner);
+    var oName = extractNameFromPersonField(rpt.owner);
+    if (oEmail) toSet[oEmail] = true;
+    if (oName) {
+      var oUser = nameToUser[oName];
+      if (oUser && oUser.lineManager) ccSet[oUser.lineManager] = true;
     }
-  });
-
-  // CC: 工序管理员（已在 TO 中的跳过）
-  admins.forEach(function(email) {
-    if (!toSet[email]) ccSet[email] = true;
+    // TO: 验证人
+    (rpt.verifierEmails || []).forEach(function(vEmail) {
+      toSet[vEmail] = true;
+    });
+    // CC: 责任人 BI 上级（via ownerEmails 查 nameToUser）
+    (rpt.ownerEmails || []).forEach(function(oe) {
+      for (var n in nameToUser) {
+        if (nameToUser[n].email && nameToUser[n].email.toLowerCase() === oe.toLowerCase()) {
+          if (nameToUser[n].lineManager) ccSet[nameToUser[n].lineManager] = true;
+          break;
+        }
+      }
+    });
+    // CC: 验证人 BI 上级
+    (rpt.verifierEmails || []).forEach(function(ve) {
+      for (var n in nameToUser) {
+        if (nameToUser[n].email && nameToUser[n].email.toLowerCase() === ve.toLowerCase()) {
+          if (nameToUser[n].lineManager) ccSet[nameToUser[n].lineManager] = true;
+          break;
+        }
+      }
+    });
   });
 
   return { to: Object.keys(toSet), cc: Object.keys(ccSet) };
