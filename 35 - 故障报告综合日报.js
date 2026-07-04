@@ -7,9 +7,6 @@
 
 // ========== 本地配置 ==========
 
-var _UR_TEST_MODE = false;
-var _UR_TEST_EMAIL = 'kelland_zhao@colpal.com';
-
 var _UR_CONFIG = {
   // 数据源：交接班模块（复用 07 的 FAULT_CONFIG.SHEET_ID）
   SHIFT_SPREADSHEET_ID: '10Fnrqc1AUiPqOi-b2UsKgR-Ww-BNdIla_HB_HjVdI0w',
@@ -431,16 +428,15 @@ function _ur_buildProcessPayloads(faultItems, pendingReviews, reviewingReports, 
 // ========== HTML 邮件生成 ==========
 
 /** 动态主题行（Per-Process） */
-function _ur_generateSubject(payload, isTest) {
+function _ur_generateSubject(payload) {
   var date = formatVariableAsDate(new Date());
   var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; });
-  var prefix = isTest ? '【测试】' : '';
   var displayName = payload.displayName;
   var proc = payload.process;
   if (hasOverdue) {
-    return prefix + '【故障报告综合日报】' + date + ' - ' + displayName + '(' + proc + ') 含逾期项 / Fault Report Daily Summary - ' + proc + ' (Overdue)';
+    return '【故障报告综合日报】' + date + ' - ' + displayName + '(' + proc + ') 含逾期项 / Fault Report Daily Summary - ' + proc + ' (Overdue)';
   }
-  return prefix + '【故障报告综合日报】' + date + ' - ' + displayName + '工序 / Fault Report Daily Summary - ' + proc + ' Process';
+  return '【故障报告综合日报】' + date + ' - ' + displayName + '工序 / Fault Report Daily Summary - ' + proc + ' Process';
 }
 
 /** 完整 HTML 邮件正文 */
@@ -864,11 +860,10 @@ function _ur_sendProcessEmails(processMap, userMaps, trigger) {
         continue;
       }
 
-      var isTest = _UR_TEST_MODE;
-      var to = isTest ? _UR_TEST_EMAIL : recipients.to.join(',');
-      var subject = _ur_generateSubject(payload, isTest);
+      var to = recipients.to.join(',');
+      var subject = _ur_generateSubject(payload);
       var body = _ur_generateBody(payload);
-      var ccList = isTest ? [] : recipients.cc;
+      var ccList = recipients.cc;
 
       var options = {
         htmlBody: body,
@@ -891,9 +886,6 @@ function _ur_sendProcessEmails(processMap, userMaps, trigger) {
       if (dTotal > 0) sectionsDesc.push('D:' + dTotal);
 
       console.log('✅ ' + proc + ' 综合日报已发送 → TO:' + recipients.to.length + '人 CC:' + (ccList.length) + '人 (' + sectionsDesc.join(', ') + ')');
-      if (isTest) {
-        console.log('   [测试模式] 原收件人: ' + recipients.to.join(', '));
-      }
 
     } catch (emailError) {
       console.error('发送工序 ' + proc + ' 综合日报时出错:', emailError);
@@ -905,8 +897,7 @@ function _ur_sendProcessEmails(processMap, userMaps, trigger) {
 
 // ========== 测试 ==========
 
-/** 测试函数：发送至 kelland_zhao@colpal.com */
+/** 测试函数 */
 function testUnifiedFaultReportDaily() {
-  _UR_TEST_MODE = true;
   sendUnifiedFaultReportDaily();
 }
