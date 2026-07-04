@@ -7,7 +7,7 @@
 
 // ========== 本地配置 ==========
 
-var _UR_TEST_MODE = true;
+var _UR_TEST_MODE = false;
 var _UR_TEST_EMAIL = 'kelland_zhao@colpal.com';
 
 var _UR_CONFIG = {
