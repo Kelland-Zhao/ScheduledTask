@@ -898,6 +898,18 @@ function _ur_getProcessRecipients(payload, nameToUser, processToAdmins) {
     }
   });
 
+  // TO: Section B 已退回报告的责任人 + CC: BI列直线上级
+  payload.sections.B.forEach(function(review) {
+    if (review.reviewStatus !== '已退回') return;
+    var email = extractEmailFromPersonField(review.owner);
+    var name = extractNameFromPersonField(review.owner);
+    if (email) toSet[email] = true;
+    if (name) {
+      var user = nameToUser[name];
+      if (user && user.lineManager) ccSet[user.lineManager] = true;
+    }
+  });
+
   // TO: Section C 报告责任人
   payload.sections.C.forEach(function(report) {
     var email = extractEmailFromPersonField(report.owner);
