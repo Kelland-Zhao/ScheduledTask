@@ -43,6 +43,12 @@ function sendUnifiedFaultReportDaily(e) {
     var pendingReviews = dbData.pendingReviews;
     console.log('Failure_Database 全量: ' + allReports.length + ' 条, 处理中: ' + pendingReviews.length + ' 条');
 
+    // Section 审核中: 从处理中报告里筛出"主管审核中"
+    var reviewingReports = pendingReviews.filter(function(r) {
+      return r.reviewStatus === '主管审核中';
+    });
+    console.log('Section 审核中: ' + reviewingReports.length + ' 条');
+
     // 构建 reportNumber → process 映射（用于 Section D 工序归属）
     var reportNoToProcess = {};
     allReports.forEach(function(r) {
@@ -76,7 +82,7 @@ function sendUnifiedFaultReportDaily(e) {
 
     // 3. 按工序归类
     var processMap = _ur_buildProcessPayloads(
-      faultItems, pendingReviews, unuploadedReports, unclosedReports
+      faultItems, pendingReviews, reviewingReports, unuploadedReports, unclosedReports
     );
     var processesWithData = Object.keys(processMap);
     console.log('工序归类完成: [' + processesWithData.join(', ') + ']');
@@ -349,6 +355,7 @@ function _ur_buildUnclosedReports(followUpData, reportNoToRecord) {
 function _ur_hasAnyItems(payload) {
   return payload.sections.A.length > 0 ||
          payload.sections.B.length > 0 ||
+         payload.sections.reviewing.length > 0 ||
          payload.sections.C.length > 0 ||
          payload.sections.D_unclosed.length > 0;
 }
@@ -358,7 +365,7 @@ function _ur_emptyProcessPayload(proc) {
   return {
     process: proc,
     displayName: PROCESS_DISPLAY_NAMES[proc] || proc,
-    sections: { A: [], B: [], C: [], D_unclosed: [] }
+    sections: { A: [], B: [], reviewing: [], C: [], D_unclosed: [] }
   };
 }
 
@@ -366,7 +373,7 @@ function _ur_emptyProcessPayload(proc) {
  * 核心函数：按工序归类所有待处理项
  * 返回 { 'INJ': ProcessPayload, 'TF': ProcessPayload, 'PK': ProcessPayload }
  */
-function _ur_buildProcessPayloads(faultItems, pendingReviews, unuploadedReports, unclosedReports) {
+function _ur_buildProcessPayloads(faultItems, pendingReviews, reviewingReports, unuploadedReports, unclosedReports) {
   var processes = ['INJ', 'TF', 'PK'];
   var processMap = {};
   processes.forEach(function(proc) {
@@ -383,6 +390,12 @@ function _ur_buildProcessPayloads(faultItems, pendingReviews, unuploadedReports,
   pendingReviews.forEach(function(review) {
     var proc = review.process;
     if (processMap[proc]) processMap[proc].sections.B.push(review);
+  });
+
+  // Section 审核中: 按 review.process 分组
+  reviewingReports.forEach(function(review) {
+    var proc = review.process;
+    if (processMap[proc]) processMap[proc].sections.reviewing.push(review);
   });
 
   // Section C: 按 report.process 分组（需 IM→INJ 映射）
@@ -458,6 +471,11 @@ function _ur_generateBody(payload) {
     html += _ur_buildSectionB(payload.sections.B);
   }
 
+  // ===== Section 审核中: 审核中报告 =====
+  if (payload.sections.reviewing.length > 0) {
+    html += _ur_buildSectionReviewing(payload.sections.reviewing);
+  }
+
   // ===== Section C: 未上传报告 =====
   if (payload.sections.C.length > 0) {
     html += _ur_buildSectionC(payload.sections.C);
@@ -487,6 +505,7 @@ function _ur_buildSummaryCards(payload) {
   var cards = [
     { label: '故障待判断<br><span style="font-size:10px;opacity:0.8;">Faults Pending</span>', value: payload.sections.A.length, color: '#E60012' },
     { label: '处理中报告<br><span style="font-size:10px;opacity:0.8;">In Review</span>', value: payload.sections.B.length, color: '#f39c12' },
+    { label: '审核中<br><span style="font-size:10px;opacity:0.8;">Reviewing</span>', value: payload.sections.reviewing.length, color: payload.sections.reviewing.length > 0 ? '#e67e22' : '#2c3e50' },
     { label: '未上传<br><span style="font-size:10px;opacity:0.8;">Unuploaded</span>', value: payload.sections.C.length, color: payload.sections.C.length > 0 ? '#e74c3c' : '#2c3e50' },
     { label: '未关闭报告<br><span style="font-size:10px;opacity:0.8;">Unclosed</span>',
       value: payload.sections.D_unclosed.length,
@@ -495,7 +514,7 @@ function _ur_buildSummaryCards(payload) {
 
   var html = '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;margin-bottom:24px;"><tr>';
   cards.forEach(function(card) {
-    html += '<td style="text-align:center;padding:14px 8px;border:1px solid #ecf0f1;width:25%;">';
+    html += '<td style="text-align:center;padding:14px 6px;border:1px solid #ecf0f1;width:20%;">';
     html += '<div style="font-size:28px;font-weight:bold;color:' + card.color + ';">' + card.value + '</div>';
     html += '<div style="color:#7f8c8d;font-size:12px;margin-top:4px;line-height:1.4;">' + card.label + '</div>';
     html += '</td>';
@@ -637,6 +656,35 @@ function _ur_buildSectionB(items) {
   return html;
 }
 
+function _ur_buildSectionReviewing(items) {
+  var maxShow = _UR_CONFIG.MAX_ITEMS_PER_SECTION;
+  var display = items.slice(0, maxShow);
+  var headers = [
+    '编号<br><span style="font-size:0.8em;opacity:0.9;">ID</span>',
+    '机台号<br><span style="font-size:0.8em;opacity:0.9;">Machine</span>',
+    '问题描述<br><span style="font-size:0.8em;opacity:0.9;">Description</span>',
+    '责任人<br><span style="font-size:0.8em;opacity:0.9;">Owner</span>',
+    '审核人<br><span style="font-size:0.8em;opacity:0.9;">Reviewer</span>',
+    '状态<br><span style="font-size:0.8em;opacity:0.9;">Status</span>'
+  ];
+
+  var rows = display.map(function(item) {
+    return [
+      _ur_escapeHtml(item.id || '-'),
+      _ur_escapeHtml(item.machineId || '-'),
+      '<span style="word-wrap:break-word;">' + _ur_escapeHtml(item.description || '-') + '</span>',
+      _ur_escapeHtml(extractNameFromPersonField(item.owner) || '-'),
+      _ur_escapeHtml(item.reviewer || '-'),
+      _ur_buildStatusBadge(item.reviewStatus)
+    ];
+  });
+
+  var html = _ur_buildSectionTitle('三', '审核中报告', 'Reports Under Review', items.length, '#e67e22');
+  html += _ur_buildTable(headers, rows, 'linear-gradient(135deg,#e67e22,#d35400)', '#fffbf0');
+  html += _ur_buildTruncationNote(items.length, maxShow);
+  return html;
+}
+
 function _ur_buildSectionC(items) {
   var maxShow = _UR_CONFIG.MAX_ITEMS_PER_SECTION;
   var display = items.slice(0, maxShow);
@@ -667,7 +715,7 @@ function _ur_buildSectionC(items) {
   var tableGradient = hasOverdue ? 'linear-gradient(135deg,#e74c3c,#c0392b)' : 'linear-gradient(135deg,#f39c12,#e67e22)';
   var rowBg = hasOverdue ? '#fff5f5' : '#fffbf0';
 
-  var html = _ur_buildSectionTitle('三', '未上传报告', 'Unuploaded Reports', items.length, titleColor);
+  var html = _ur_buildSectionTitle('四', '未上传报告', 'Unuploaded Reports', items.length, titleColor);
   html += _ur_buildTable(headers, rows, tableGradient, rowBg);
   html += _ur_buildTruncationNote(items.length, maxShow);
   return html;
@@ -697,7 +745,7 @@ function _ur_buildSectionD(items) {
     ];
   });
 
-  var html = _ur_buildSectionTitle('四', '未关闭报告', 'Unclosed Reports', items.length, '#3f51b5');
+  var html = _ur_buildSectionTitle('五', '未关闭报告', 'Unclosed Reports', items.length, '#3f51b5');
   html += _ur_buildTable(headers, rows, 'linear-gradient(135deg,#3f51b5,#283593)', '#f0f4ff');
   html += _ur_buildTruncationNote(items.length, maxShow);
   return html;
@@ -726,6 +774,15 @@ function _ur_getProcessRecipients(payload, nameToUser, processToAdmins) {
   // TO: 工序管理员
   var admins = processToAdmins[proc] || [];
   admins.forEach(function(email) { toSet[email] = true; });
+
+  // TO: Section 审核中 审核人
+  payload.sections.reviewing.forEach(function(review) {
+    var reviewerName = review.reviewer;
+    if (reviewerName) {
+      var user = nameToUser[reviewerName];
+      if (user && user.email) toSet[user.email] = true;
+    }
+  });
 
   // TO: Section C 报告责任人
   payload.sections.C.forEach(function(report) {
@@ -796,6 +853,7 @@ function _ur_sendProcessEmails(processMap, userMaps, trigger) {
       var sectionsDesc = [];
       if (payload.sections.A.length > 0) sectionsDesc.push('A:' + payload.sections.A.length);
       if (payload.sections.B.length > 0) sectionsDesc.push('B:' + payload.sections.B.length);
+      if (payload.sections.reviewing.length > 0) sectionsDesc.push('审核中:' + payload.sections.reviewing.length);
       if (payload.sections.C.length > 0) sectionsDesc.push('C:' + payload.sections.C.length);
       var dTotal = payload.sections.D_unclosed.length;
       if (dTotal > 0) sectionsDesc.push('D:' + dTotal);
