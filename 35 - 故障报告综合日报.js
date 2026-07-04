@@ -1,9 +1,113 @@
-// V20260704.2 — 故障报告综合日报（Per-Process）
+// V20260704.3 — 故障报告综合日报（独立模块，无外部依赖）
 // 功能：合并 07（待判断+处理中）、21（超期未上传）、23（跟进项）为每工序一封综合日报
-// 依赖：00-专项菜单.js（PERMISSION_SPREADSHEET_ID 等全局常量）
+// 依赖：00-专项菜单.js（PERMISSION_SPREADSHEET_ID, PERMISSION_SHEET_NAME, currentTimeZone）
 //       01-Common.js（writeLog, formatVariableAsDate）
-//       22-故障报告周报.js（FR_CONFIG, getUserIDLookupMaps, extractNameFromPersonField 等共享函数）
 // 规范：遵循 docs/邮件UI规范.md — 内联样式、Mode A 头部、双语尾部
+
+// ========== Failure_Database 配置 ==========
+
+var FR_CONFIG = {
+  SPREADSHEET_ID: '1YAPdZKVEOHgCGIJRQwWTQBmwaWIS4yd1SQKJJfRCtAU',
+  FAILURE_SHEET_NAME: 'Failure_Database',
+  FOLLOWUP_SHEET_NAME: 'Failure_Report_followup'
+};
+
+// ========== 工序显示名称 ==========
+
+var PROCESS_DISPLAY_NAMES = {
+  'INJ': '注塑',
+  'TF': '植磨毛',
+  'PK': '包装'
+};
+
+// ========== 人员字段解析 ==========
+
+function extractNameFromPersonField(field) {
+  if (!field) return '';
+  return String(field).replace(/【.+?】/, '').trim();
+}
+
+function extractEmailFromPersonField(field) {
+  if (!field) return '';
+  var match = String(field).match(/【(.+?)】/);
+  return match ? match[1].trim() : '';
+}
+
+// ========== 通用工具（原 22 共享函数） ==========
+
+function getFieldIndexes(headers) {
+  var indexes = {};
+  headers.forEach(function(header, index) {
+    indexes[header] = index;
+  });
+  return indexes;
+}
+
+function calculateOverdueDays(assignDate) {
+  try {
+    if (!assignDate || !(assignDate instanceof Date)) return 0;
+    var today = new Date();
+    var timeDiff = today.getTime() - assignDate.getTime();
+    var daysDiff = Math.ceil(timeDiff / (1000 * 3600 * 24));
+    return Math.max(0, daysDiff);
+  } catch (error) {
+    console.error('计算超期天数时出错:', error);
+    return 0;
+  }
+}
+
+function mapFailureProcessToUserID(failureProcess) {
+  var MAP = { 'IM': 'INJ' };
+  return MAP[failureProcess] || failureProcess;
+}
+
+// ========== userID 权限表读取 ==========
+
+function getUserIDLookupMaps() {
+  try {
+    console.log('=== 开始读取 userID 权限表 ===');
+    var sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID)
+      .getSheetByName(PERMISSION_SHEET_NAME);
+    if (!sheet) { console.error('userID 表未找到'); return { nameToUser: {}, processToAdmins: {} }; }
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 3) {
+      console.warn('userID 表数据不足');
+      return { nameToUser: {}, processToAdmins: {} };
+    }
+    var headers = data[1];
+    var idxName = headers.findIndex(function(h) { return h === 'NAME'; });
+    var idxEmail = headers.findIndex(function(h) { return h === 'GMail'; });
+    var idxProcess = 14;
+    var idxFaultAdmin = 57;
+    var idxLineMgr = 60;
+    if (idxName === -1 || idxEmail === -1) {
+      console.error('userID 表缺少 NAME 或 GMail 列');
+      return { nameToUser: {}, processToAdmins: {} };
+    }
+    var nameToUser = {};
+    var processToAdmins = {};
+    var nameToProcess = {};
+    for (var i = 2; i < data.length; i++) {
+      var row = data[i];
+      var name = String(row[idxName] || '').trim();
+      var email = String(row[idxEmail] || '').trim();
+      var process = String(row[idxProcess] || '').trim();
+      var faultAdmin = String(row[idxFaultAdmin] || '').trim();
+      var lineMgr = String(row[idxLineMgr] || '').trim();
+      if (name && email) nameToUser[name] = { email: email, lineManager: lineMgr };
+      if (name && process && process !== 'ALL') nameToProcess[name] = process;
+      if (process && process !== 'ALL' && email && faultAdmin === 'Y') {
+        if (!processToAdmins[process]) processToAdmins[process] = [];
+        if (processToAdmins[process].indexOf(email) === -1) processToAdmins[process].push(email);
+      }
+    }
+    console.log('nameToUser: ' + Object.keys(nameToUser).length + ' 条, processToAdmins: [' + Object.keys(processToAdmins).join(', ') + ']');
+    return { nameToUser: nameToUser, processToAdmins: processToAdmins, nameToProcess: nameToProcess };
+  } catch (error) {
+    console.error('读取 userID 权限表时出错:', error);
+    return { nameToUser: {}, processToAdmins: {}, nameToProcess: {} };
+  }
+}
 
 // ========== 本地配置 ==========
 
