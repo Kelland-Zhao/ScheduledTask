@@ -101,17 +101,18 @@ function getFailureReportData() {
   }
 }
 
-function getOverdueFailureReportData() {
+function getOverdueFailureReportData(overdueDays) {
   try {
+    const threshold = overdueDays !== undefined ? overdueDays : FR_CONFIG.OVERDUE_DAYS;
     const allData = getFailureReportData();
 
     const overdueData = allData.filter(function(record) {
-      const isOverdue = record.overdueDays >= FR_CONFIG.OVERDUE_DAYS;
+      const isOverdue = record.overdueDays >= threshold;
       const isUnuploaded = !isFailureReportUploaded(record).isUploaded;
       return isOverdue && isUnuploaded;
     });
 
-    console.log('找到 ' + overdueData.length + ' 条超期且未上传的故障报告（超期天数 >= ' + FR_CONFIG.OVERDUE_DAYS + '天）');
+    console.log('找到 ' + overdueData.length + ' 条超期且未上传的故障报告（超期天数 >= ' + threshold + '天）');
 
     overdueData.sort(function(a, b) { return b.overdueDays - a.overdueDays; });
 
