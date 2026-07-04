@@ -1,5 +1,5 @@
-// V20260704.1 — 故障报告综合日报
-// 功能：合并 07（待判断+处理中）、21（超期未上传）、23（跟进项）为每人每天一封综合日报
+// V20260704.2 — 故障报告综合日报（Per-Process）
+// 功能：合并 07（待判断+处理中）、21（超期未上传）、23（跟进项）为每工序一封综合日报
 // 依赖：00-专项菜单.js（PERMISSION_SPREADSHEET_ID 等全局常量）
 //       01-Common.js（writeLog, formatVariableAsDate）
 //       22-故障报告周报.js（FR_CONFIG, getUserIDLookupMaps, extractNameFromPersonField 等共享函数）
@@ -37,10 +37,25 @@ function sendUnifiedFaultReportDaily(e) {
     var faultItems = _ur_getFilteredFaultItems();
     console.log('Section A 待判断故障: ' + faultItems.length + ' 条');
 
-    var pendingReviews = _ur_getPendingReviews();
-    console.log('Section B 处理中报告: ' + pendingReviews.length + ' 条');
+    // Failure_Database 只读一次，同时产出 Section B + C + reportNo→process 映射
+    var dbData = _ur_readFailureDatabaseRaw();
+    var allReports = dbData.reports;
+    var pendingReviews = dbData.pendingReviews;
+    console.log('Failure_Database 全量: ' + allReports.length + ' 条, 处理中: ' + pendingReviews.length + ' 条');
 
-    var overdueReports = getOverdueFailureReportData(7);
+    // 构建 reportNumber → process 映射（用于 Section D 工序归属）
+    var reportNoToProcess = {};
+    allReports.forEach(function(r) {
+      if (r.reportNumber) {
+        reportNoToProcess[r.reportNumber] = mapFailureProcessToUserID(r.process);
+      }
+    });
+
+    // Section C: 超期≥7天且未上传
+    var overdueReports = allReports.filter(function(r) {
+      return r.overdueDays >= 7 && !isFailureReportUploaded(r).isUploaded;
+    });
+    overdueReports.sort(function(a, b) { return b.overdueDays - a.overdueDays; });
     console.log('Section C 超期未上传: ' + overdueReports.length + ' 条');
 
     var followUpData = _ur_getFollowUpData();
@@ -54,23 +69,23 @@ function sendUnifiedFaultReportDaily(e) {
       return;
     }
 
-    // 3. 角色解析：按 email 归类
-    var personMap = _ur_buildPersonPayloads(
-      faultItems, pendingReviews, overdueReports, followUpData, userMaps
+    // 3. 按工序归类
+    var processMap = _ur_buildProcessPayloads(
+      faultItems, pendingReviews, overdueReports, followUpData, reportNoToProcess
     );
-    var personCount = Object.keys(personMap).length;
-    console.log('角色解析完成: ' + personCount + ' 人需要发送');
+    var processesWithData = Object.keys(processMap);
+    console.log('工序归类完成: [' + processesWithData.join(', ') + ']');
 
-    if (personCount === 0) {
-      console.log('没有需要发送的收件人');
-      writeLog(fnName, '成功', '没有需要发送的收件人，跳过执行', trigger, '');
+    if (processesWithData.length === 0) {
+      console.log('所有工序均无待处理项');
+      writeLog(fnName, '成功', '所有工序均无待处理项，跳过执行', trigger, '');
       return;
     }
 
-    // 4. 发送
-    var sentCount = _ur_sendAll(personMap, userMaps, trigger);
+    // 4. 按工序发送
+    var sentCount = _ur_sendProcessEmails(processMap, userMaps, trigger);
     console.log('=== 故障报告综合日报执行完成，发送 ' + sentCount + ' 封 ===');
-    writeLog(fnName, '成功', '发送 ' + sentCount + ' 封，覆盖 ' + personCount + ' 人', trigger, '');
+    writeLog(fnName, '成功', '发送 ' + sentCount + ' 封，工序: [' + processesWithData.join(', ') + ']', trigger, '');
 
   } catch (error) {
     console.error('故障报告综合日报执行出错:', error);
@@ -195,38 +210,62 @@ function _ur_filterFaultItems(faultItems) {
   });
 }
 
-/** 读取 Failure_Database 中处理中的故障报告（移植自 07 的 _getPendingReviewReports） */
-function _ur_getPendingReviews() {
+/** 读取 Failure_Database 一次，同时返回全量报告和处理中报告 */
+function _ur_readFailureDatabaseRaw() {
   try {
     var sheet = SpreadsheetApp.openById(FR_CONFIG.SPREADSHEET_ID)
       .getSheetByName(FR_CONFIG.FAILURE_SHEET_NAME);
-    if (!sheet) return [];
+    if (!sheet) return { reports: [], pendingReviews: [] };
     var data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return [];
+    if (data.length <= 1) return { reports: [], pendingReviews: [] };
     var headers = data[0];
+    var idx = getFieldIndexes(headers);
     var idxReviewStatus = headers.indexOf('审核状态 / Review Status');
-    if (idxReviewStatus < 0) return [];
+    var idxReviewer = headers.indexOf('审核人 / Reviewed By');
+
     var reports = [];
+    var pendingReviews = [];
+
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
-      var reviewStatus = String(row[idxReviewStatus] || '').trim();
-      if (!reviewStatus || reviewStatus === '已完成') continue;
-      reports.push({
-        id: row[headers.indexOf('编号')] || '',
-        machineId: row[headers.indexOf('机台号')] || '',
-        description: row[headers.indexOf('问题描述')] || '',
-        process: mapFailureProcessToUserID(row[headers.indexOf('工序')] || ''),
-        reportNumber: row[headers.indexOf('故障报告编号')] || '',
-        owner: String(row[headers.indexOf('责任人')] || '').trim(),
-        reviewer: String(row[headers.indexOf('审核人 / Reviewed By')] || '').trim(),
-        reviewStatus: reviewStatus
-      });
+
+      var report = {
+        id: row[idx['编号']] || '',
+        machineId: row[idx['机台号']] || '',
+        description: row[idx['问题描述']] || '',
+        submitDate: row[idx['提交日期']] || '',
+        workshop: row[idx['车间']] || '',
+        process: row[idx['工序']] || '',
+        reportNumber: row[idx['故障报告编号']] || '',
+        assignDate: row[idx['分配日期']] || '',
+        uploadDate: row[idx['上传日期']] || '',
+        attachment: row[idx['附件']] || '',
+        owner: String(row[idx['责任人']] || '').trim(),
+        overdueDays: calculateOverdueDays(row[idx['分配日期']])
+      };
+      reports.push(report);
+
+      // 同时判断是否处理中
+      var reviewStatus = idxReviewStatus >= 0 ? String(row[idxReviewStatus] || '').trim() : '';
+      if (reviewStatus && reviewStatus !== '已完成') {
+        pendingReviews.push({
+          id: report.id,
+          machineId: report.machineId,
+          description: report.description,
+          process: mapFailureProcessToUserID(report.process),
+          reportNumber: report.reportNumber,
+          owner: report.owner,
+          reviewer: idxReviewer >= 0 ? String(row[idxReviewer] || '').trim() : '',
+          reviewStatus: reviewStatus
+        });
+      }
     }
-    console.log('处理中故障报告（非已完成）: ' + reports.length + ' 条');
-    return reports;
+
+    console.log('Failure_Database: ' + reports.length + ' 条全量, ' + pendingReviews.length + ' 条处理中');
+    return { reports: reports, pendingReviews: pendingReviews };
   } catch (e) {
-    console.error('读取待审核报告失败: ' + e.message);
-    return [];
+    console.error('读取 Failure_Database 失败: ' + e.message);
+    return { reports: [], pendingReviews: [] };
   }
 }
 
@@ -284,19 +323,9 @@ function _ur_formatFollowUpDate(value) {
   return isNaN(d.getTime()) ? String(value) : formatVariableAsDate(d);
 }
 
-// ========== 角色解析引擎 ==========
+// ========== 工序归类引擎 ==========
 
-/** 创建空的 person payload */
-function _ur_emptyPayload(email) {
-  return {
-    email: email,
-    name: '',
-    roles: { isProcessAdmin: false, isReportOwner: false, isFollowUpOwner: false, isFollowUpVerifier: false, processes: [] },
-    sections: { A: [], B: [], C: [], D_owner: { dueSoon: [], overdue: [] }, D_verifier: [] }
-  };
-}
-
-/** 判断 person payload 是否有任何待处理项 */
+/** 判断 process payload 是否有任何待处理项 */
 function _ur_hasAnyItems(payload) {
   return payload.sections.A.length > 0 ||
          payload.sections.B.length > 0 ||
@@ -306,112 +335,65 @@ function _ur_hasAnyItems(payload) {
          payload.sections.D_verifier.length > 0;
 }
 
+/** 创建空的工序 payload */
+function _ur_emptyProcessPayload(proc) {
+  return {
+    process: proc,
+    displayName: PROCESS_DISPLAY_NAMES[proc] || proc,
+    sections: { A: [], B: [], C: [], D_owner: { dueSoon: [], overdue: [] }, D_verifier: [] }
+  };
+}
+
 /**
- * 核心函数：按 email 归类所有待处理项
- * 返回 { email: PersonPayload }
+ * 核心函数：按工序归类所有待处理项
+ * 返回 { 'INJ': ProcessPayload, 'TF': ProcessPayload, 'PK': ProcessPayload }
  */
-function _ur_buildPersonPayloads(faultItems, pendingReviews, overdueReports, followUpData, userMaps) {
-  var personMap = {};
-  var nameToUser = userMaps.nameToUser || {};
-  var processToAdmins = userMaps.processToAdmins || {};
-  var nameToProcess = userMaps.nameToProcess || {};
+function _ur_buildProcessPayloads(faultItems, pendingReviews, overdueReports, followUpData, reportNoToProcess) {
+  var processes = ['INJ', 'TF', 'PK'];
+  var processMap = {};
+  processes.forEach(function(proc) {
+    processMap[proc] = _ur_emptyProcessPayload(proc);
+  });
 
-  function ensure(email) {
-    var key = String(email).toLowerCase().trim();
-    if (!personMap[key]) personMap[key] = _ur_emptyPayload(email);
-    return personMap[key];
-  }
-
-  function addProcessRole(email, process) {
-    var p = ensure(email);
-    p.roles.isProcessAdmin = true;
-    if (p.roles.processes.indexOf(process) === -1) p.roles.processes.push(process);
-    return p;
-  }
-
-  // Section A: 故障待判断 → 工序管理员
+  // Section A: 按 item.processType 分组
   faultItems.forEach(function(item) {
-    var process = item.processType;
-    var admins = processToAdmins[process] || [];
-    admins.forEach(function(adminEmail) {
-      addProcessRole(adminEmail, process).sections.A.push(item);
-    });
+    var proc = item.processType;
+    if (processMap[proc]) processMap[proc].sections.A.push(item);
   });
 
-  // Section B: 处理中报告 → 工序管理员
+  // Section B: 按 review.process 分组（已是 INJ/TF/PK）
   pendingReviews.forEach(function(review) {
-    var process = review.process;
-    if (!process) return;
-    var admins = processToAdmins[process] || [];
-    admins.forEach(function(adminEmail) {
-      addProcessRole(adminEmail, process).sections.B.push(review);
-    });
+    var proc = review.process;
+    if (processMap[proc]) processMap[proc].sections.B.push(review);
   });
 
-  // 构建 email→name 反向映射
-  var emailToName = {};
-  for (var n in nameToUser) {
-    if (nameToUser.hasOwnProperty(n)) {
-      var u = nameToUser[n];
-      if (u.email) emailToName[u.email.toLowerCase()] = n;
-    }
-  }
-
-  // Section C: 超期未上传报告 → 报告责任人
+  // Section C: 按 report.process 分组（需 IM→INJ 映射）
   overdueReports.forEach(function(report) {
-    var email = extractEmailFromPersonField(report.owner);
-    var name = extractNameFromPersonField(report.owner);
-    if (!email && name) {
-      var user = nameToUser[name];
-      if (user && user.email) email = user.email;
-    }
-    if (!email) return;
-    var p = ensure(email);
-    p.roles.isReportOwner = true;
-    p.name = p.name || name || emailToName[email.toLowerCase()] || '';
-    p.sections.C.push(report);
+    var proc = mapFailureProcessToUserID(report.process);
+    if (processMap[proc]) processMap[proc].sections.C.push(report);
   });
 
-  // Section D: 跟进项
+  // Section D: 按 reportNo → process 解析工序
   followUpData.forEach(function(item) {
     var status = item.status || '';
     if (status.indexOf('已通过') !== -1) return;
-
-    // D1: 责任人（未通过/NA，且临期≤2天或逾期）
+    var proc = reportNoToProcess[item.reportNo];
+    if (!proc || !processMap[proc]) return;
+    var days = _ur_calcDaysUntilDue(item.dueDate);
     if (status.indexOf('未通过') !== -1 || status.indexOf('NA') !== -1) {
-      var ownerEmail = extractEmailFromPersonField(item.owner);
-      if (ownerEmail) {
-        var p = ensure(ownerEmail);
-        p.roles.isFollowUpOwner = true;
-        p.name = p.name || extractNameFromPersonField(item.owner) ||
-                 emailToName[ownerEmail.toLowerCase()] || '';
-        var days = _ur_calcDaysUntilDue(item.dueDate);
-        if (days < 0) {
-          p.sections.D_owner.overdue.push(item);
-        } else if (days <= 2) {
-          p.sections.D_owner.dueSoon.push(item);
-        }
-      }
+      if (days < 0) processMap[proc].sections.D_owner.overdue.push(item);
+      else if (days <= 2) processMap[proc].sections.D_owner.dueSoon.push(item);
     }
-
-    // D2: 验证人（未验证）
     if (status.indexOf('未验证') !== -1) {
-      var verifierEmail = extractEmailFromPersonField(item.verifier);
-      if (verifierEmail) {
-        var p = ensure(verifierEmail);
-        p.roles.isFollowUpVerifier = true;
-        p.name = p.name || extractNameFromPersonField(item.verifier) ||
-                 emailToName[verifierEmail.toLowerCase()] || '';
-        p.sections.D_verifier.push(item);
-      }
+      processMap[proc].sections.D_verifier.push(item);
     }
   });
 
-  // 过滤无事项的人
+  // 过滤无事项的工序
   var result = {};
-  for (var email in personMap) {
-    if (personMap.hasOwnProperty(email) && _ur_hasAnyItems(personMap[email])) {
-      result[email] = personMap[email];
+  for (var p in processMap) {
+    if (processMap.hasOwnProperty(p) && _ur_hasAnyItems(processMap[p])) {
+      result[p] = processMap[p];
     }
   }
   return result;
@@ -419,26 +401,24 @@ function _ur_buildPersonPayloads(faultItems, pendingReviews, overdueReports, fol
 
 // ========== HTML 邮件生成 ==========
 
-/** 动态主题行 */
+/** 动态主题行（Per-Process） */
 function _ur_generateSubject(payload, isTest) {
   var date = formatVariableAsDate(new Date());
-  var totalItems = payload.sections.A.length + payload.sections.B.length +
-                   payload.sections.C.length +
-                   payload.sections.D_owner.dueSoon.length +
-                   payload.sections.D_owner.overdue.length +
-                   payload.sections.D_verifier.length;
   var hasOverdue = payload.sections.C.length > 0 || payload.sections.D_owner.overdue.length > 0;
   var prefix = isTest ? '【测试】' : '';
+  var displayName = payload.displayName;
+  var proc = payload.process;
   if (hasOverdue) {
-    return prefix + '【故障报告综合日报】' + date + ' - 含逾期项 / Fault Report Daily Summary - Overdue Items';
+    return prefix + '【故障报告综合日报】' + date + ' - ' + displayName + '(' + proc + ') 含逾期项 / Fault Report Daily Summary - ' + proc + ' (Overdue)';
   }
-  return prefix + '【故障报告综合日报】' + date + ' - ' + totalItems + '项待处理 / Unified Fault Report Daily Summary';
+  return prefix + '【故障报告综合日报】' + date + ' - ' + displayName + '工序 / Fault Report Daily Summary - ' + proc + ' Process';
 }
 
 /** 完整 HTML 邮件正文 */
 function _ur_generateBody(payload) {
   var date = formatVariableAsDate(new Date());
-  var name = payload.name || payload.email;
+  var displayName = payload.displayName;
+  var proc = payload.process;
 
   // 主体颜色主题：根据是否有逾期决定
   var hasOverdue = payload.sections.C.length > 0 || payload.sections.D_owner.overdue.length > 0;
@@ -449,7 +429,7 @@ function _ur_generateBody(payload) {
 
   html += '<div style="background:#E60012;color:white;padding:16px 24px;">';
   html += '<h2 style="margin:0;font-size:20px;">【故障报告综合日报】Fault Report Daily Summary</h2>';
-  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px;">收件人: ' + _ur_escapeHtml(name) + ' | ' + date + '</p>';
+  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px;">' + displayName + '工序 / ' + proc + ' Process | ' + date + '</p>';
   if (hasOverdue) {
     html += '<p style="margin:4px 0 0;opacity:0.85;font-size:13px;color:#FFC107;">⚠ 包含逾期项 / Overdue Items Included</p>';
   }
@@ -783,60 +763,77 @@ function _ur_buildFooter() {
 
 // ========== 发送 ==========
 
-/** 计算 CC 列表 */
-function _ur_computeCC(payload, nameToUser, processToAdmins) {
+/** 计算工序邮件的 TO 和 CC 列表 */
+function _ur_getProcessRecipients(payload, nameToUser, processToAdmins) {
+  var proc = payload.process;
+  var toSet = {};
   var ccSet = {};
   ccSet[_UR_CONFIG.ADMIN_EMAIL] = true;
 
-  // 工序管理员 CC（排除收件人本人）
-  payload.roles.processes.forEach(function(process) {
-    var admins = processToAdmins[process] || [];
-    admins.forEach(function(email) {
-      if (email.toLowerCase() !== payload.email.toLowerCase()) {
-        ccSet[email] = true;
-      }
-    });
-  });
+  // TO: 工序管理员
+  var admins = processToAdmins[proc] || [];
+  admins.forEach(function(email) { toSet[email] = true; });
 
-  // Section C 报告责任人的 Line Manager
+  // TO: Section C 报告责任人
   payload.sections.C.forEach(function(report) {
+    var email = extractEmailFromPersonField(report.owner);
     var name = extractNameFromPersonField(report.owner);
+    if (email) toSet[email] = true;
     if (name) {
       var user = nameToUser[name];
       if (user && user.lineManager) ccSet[user.lineManager] = true;
     }
   });
 
-  // Section D1 跟进责任人的 Line Manager
+  // TO: Section D 责任人 + CC: Line Manager
   var allFollowUpItems = payload.sections.D_owner.dueSoon.concat(payload.sections.D_owner.overdue);
   allFollowUpItems.forEach(function(item) {
+    var email = extractEmailFromPersonField(item.owner);
     var name = extractNameFromPersonField(item.owner);
+    if (email) toSet[email] = true;
     if (name) {
       var user = nameToUser[name];
       if (user && user.lineManager) ccSet[user.lineManager] = true;
     }
   });
 
-  return Object.keys(ccSet);
+  // TO: Section D 验证人
+  payload.sections.D_verifier.forEach(function(item) {
+    var email = extractEmailFromPersonField(item.verifier);
+    if (email) toSet[email] = true;
+  });
+
+  // CC: 工序管理员（已在 TO 中的跳过）
+  admins.forEach(function(email) {
+    if (!toSet[email]) ccSet[email] = true;
+  });
+
+  return { to: Object.keys(toSet), cc: Object.keys(ccSet) };
 }
 
-/** 逐人发送邮件 */
-function _ur_sendAll(personMap, userMaps, trigger) {
+/** 按工序发送邮件 */
+function _ur_sendProcessEmails(processMap, userMaps, trigger) {
   var sentCount = 0;
   var nameToUser = userMaps.nameToUser || {};
   var processToAdmins = userMaps.processToAdmins || {};
 
-  for (var email in personMap) {
-    if (!personMap.hasOwnProperty(email)) continue;
-    var payload = personMap[email];
+  for (var proc in processMap) {
+    if (!processMap.hasOwnProperty(proc)) continue;
+    var payload = processMap[proc];
     if (!_ur_hasAnyItems(payload)) continue;
 
     try {
+      var recipients = _ur_getProcessRecipients(payload, nameToUser, processToAdmins);
+      if (recipients.to.length === 0) {
+        console.warn('⚠️ 工序 ' + proc + ': 无有效收件人，跳过');
+        continue;
+      }
+
       var isTest = _UR_TEST_MODE;
-      var to = isTest ? _UR_TEST_EMAIL : payload.email;
+      var to = isTest ? _UR_TEST_EMAIL : recipients.to.join(',');
       var subject = _ur_generateSubject(payload, isTest);
       var body = _ur_generateBody(payload);
-      var ccList = _ur_computeCC(payload, nameToUser, processToAdmins);
+      var ccList = isTest ? [] : recipients.cc;
 
       var options = {
         htmlBody: body,
@@ -857,13 +854,13 @@ function _ur_sendAll(personMap, userMaps, trigger) {
       var dTotal = payload.sections.D_owner.dueSoon.length + payload.sections.D_owner.overdue.length + payload.sections.D_verifier.length;
       if (dTotal > 0) sectionsDesc.push('D:' + dTotal);
 
-      console.log('✅ 综合日报已发送 → ' + to + ' (' + sectionsDesc.join(', ') + ') CC:' + ccList.join(', '));
+      console.log('✅ ' + proc + ' 综合日报已发送 → TO:' + recipients.to.length + '人 CC:' + (ccList.length) + '人 (' + sectionsDesc.join(', ') + ')');
       if (isTest) {
-        console.log('   [测试模式] 原收件人应为: ' + email);
+        console.log('   [测试模式] 原收件人: ' + recipients.to.join(', '));
       }
 
     } catch (emailError) {
-      console.error('发送综合日报给 ' + email + ' 时出错:', emailError);
+      console.error('发送工序 ' + proc + ' 综合日报时出错:', emailError);
     }
   }
 
