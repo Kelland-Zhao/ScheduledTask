@@ -51,9 +51,9 @@ function sendUnifiedFaultReportDaily(e) {
       }
     });
 
-    // Section C: 全部未上传（不限超期天数）
+    // Section C: 审核状态=待提交 即为未上传
     var unuploadedReports = allReports.filter(function(r) {
-      return !isFailureReportUploaded(r).isUploaded;
+      return r.reviewStatus === '待提交';
     });
     // 按超期天数降序排列
     unuploadedReports.sort(function(a, b) { return b.overdueDays - a.overdueDays; });
@@ -230,6 +230,8 @@ function _ur_readFailureDatabaseRaw() {
     for (var i = 1; i < data.length; i++) {
       var row = data[i];
 
+      var reviewStatus = idxReviewStatus >= 0 ? String(row[idxReviewStatus] || '').trim() : '';
+
       var report = {
         id: row[idx['编号']] || '',
         machineId: row[idx['机台号']] || '',
@@ -242,12 +244,12 @@ function _ur_readFailureDatabaseRaw() {
         uploadDate: row[idx['上传日期']] || '',
         attachment: row[idx['附件']] || '',
         owner: String(row[idx['责任人']] || '').trim(),
-        overdueDays: calculateOverdueDays(row[idx['分配日期']])
+        overdueDays: calculateOverdueDays(row[idx['分配日期']]),
+        reviewStatus: reviewStatus
       };
       reports.push(report);
 
       // 同时判断是否处理中
-      var reviewStatus = idxReviewStatus >= 0 ? String(row[idxReviewStatus] || '').trim() : '';
       if (reviewStatus && reviewStatus !== '已完成') {
         pendingReviews.push({
           id: report.id,
