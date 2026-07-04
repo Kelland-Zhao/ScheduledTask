@@ -444,19 +444,25 @@ function _ur_generateBody(payload) {
   // 主体颜色主题：Section C 是否有 ≥7天 的项
   var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; });
 
-  // ===== 头部（Mode A） =====
+  // ===== 头部（Mode A + Logo） =====
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
-  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto;">';
+  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:960px;margin:0 auto;">';
 
-  html += '<div style="background:#E60012;color:white;padding:16px 24px;">';
+  html += '<div style="background:#E60012;color:white;padding:14px 28px;">';
+  html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%;"><tr>';
+  html += '<td style="vertical-align:middle;">';
   html += '<h2 style="margin:0;font-size:20px;">【故障报告综合日报】Fault Report Daily Summary</h2>';
   html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px;">' + displayName + '工序 / ' + proc + ' Process | ' + date + '</p>';
   if (hasOverdue) {
     html += '<p style="margin:4px 0 0;opacity:0.85;font-size:13px;color:#FFC107;">⚠ 包含逾期项 / Overdue Items Included</p>';
   }
+  html += '</td>';
+  html += '<td style="width:50px;vertical-align:middle;text-align:right;padding-left:16px;">';
+  html += '<img src="' + _dr_COLGATE_LOGO + '" style="height:36px;display:block;" alt="Colgate">';
+  html += '</td></tr></table>';
   html += '</div>';
 
-  html += '<div style="padding:24px;">';
+  html += '<div style="padding:20px 28px;">';
 
   // ===== 摘要卡片 =====
   html += _ur_buildSummaryCards(payload);
