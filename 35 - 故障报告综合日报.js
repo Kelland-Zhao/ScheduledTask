@@ -51,12 +51,13 @@ function sendUnifiedFaultReportDaily(e) {
       }
     });
 
-    // Section C: 超期≥7天且未上传
-    var overdueReports = allReports.filter(function(r) {
-      return r.overdueDays >= 7 && !isFailureReportUploaded(r).isUploaded;
+    // Section C: 全部未上传（不限超期天数）
+    var unuploadedReports = allReports.filter(function(r) {
+      return !isFailureReportUploaded(r).isUploaded;
     });
-    overdueReports.sort(function(a, b) { return b.overdueDays - a.overdueDays; });
-    console.log('Section C 超期未上传: ' + overdueReports.length + ' 条');
+    // 按超期天数降序排列
+    unuploadedReports.sort(function(a, b) { return b.overdueDays - a.overdueDays; });
+    console.log('Section C 未上传: ' + unuploadedReports.length + ' 条');
 
     var followUpData = _ur_getFollowUpData();
     console.log('Section D 跟进项: ' + followUpData.length + ' 条');
@@ -71,7 +72,7 @@ function sendUnifiedFaultReportDaily(e) {
 
     // 3. 按工序归类
     var processMap = _ur_buildProcessPayloads(
-      faultItems, pendingReviews, overdueReports, followUpData, reportNoToProcess
+      faultItems, pendingReviews, unuploadedReports, followUpData, reportNoToProcess
     );
     var processesWithData = Object.keys(processMap);
     console.log('工序归类完成: [' + processesWithData.join(', ') + ']');
@@ -348,7 +349,7 @@ function _ur_emptyProcessPayload(proc) {
  * 核心函数：按工序归类所有待处理项
  * 返回 { 'INJ': ProcessPayload, 'TF': ProcessPayload, 'PK': ProcessPayload }
  */
-function _ur_buildProcessPayloads(faultItems, pendingReviews, overdueReports, followUpData, reportNoToProcess) {
+function _ur_buildProcessPayloads(faultItems, pendingReviews, unuploadedReports, followUpData, reportNoToProcess) {
   var processes = ['INJ', 'TF', 'PK'];
   var processMap = {};
   processes.forEach(function(proc) {
@@ -368,7 +369,7 @@ function _ur_buildProcessPayloads(faultItems, pendingReviews, overdueReports, fo
   });
 
   // Section C: 按 report.process 分组（需 IM→INJ 映射）
-  overdueReports.forEach(function(report) {
+  unuploadedReports.forEach(function(report) {
     var proc = mapFailureProcessToUserID(report.process);
     if (processMap[proc]) processMap[proc].sections.C.push(report);
   });
@@ -404,7 +405,8 @@ function _ur_buildProcessPayloads(faultItems, pendingReviews, overdueReports, fo
 /** 动态主题行（Per-Process） */
 function _ur_generateSubject(payload, isTest) {
   var date = formatVariableAsDate(new Date());
-  var hasOverdue = payload.sections.C.length > 0 || payload.sections.D_owner.overdue.length > 0;
+  var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; }) ||
+                   payload.sections.D_owner.overdue.length > 0;
   var prefix = isTest ? '【测试】' : '';
   var displayName = payload.displayName;
   var proc = payload.process;
@@ -420,8 +422,9 @@ function _ur_generateBody(payload) {
   var displayName = payload.displayName;
   var proc = payload.process;
 
-  // 主体颜色主题：根据是否有逾期决定
-  var hasOverdue = payload.sections.C.length > 0 || payload.sections.D_owner.overdue.length > 0;
+  // 主体颜色主题：根据是否有逾期决定（Section C ≥7天 或 Section D 逾期项）
+  var hasOverdue = payload.sections.C.some(function(r) { return r.overdueDays >= 7; }) ||
+                   payload.sections.D_owner.overdue.length > 0;
 
   // ===== 头部（Mode A） =====
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
@@ -450,7 +453,7 @@ function _ur_generateBody(payload) {
     html += _ur_buildSectionB(payload.sections.B);
   }
 
-  // ===== Section C: 超期未上传报告 =====
+  // ===== Section C: 未上传报告 =====
   if (payload.sections.C.length > 0) {
     html += _ur_buildSectionC(payload.sections.C);
   }
@@ -481,7 +484,7 @@ function _ur_buildSummaryCards(payload) {
   var cards = [
     { label: '故障待判断<br><span style="font-size:10px;opacity:0.8;">Faults Pending</span>', value: payload.sections.A.length, color: '#E60012' },
     { label: '处理中报告<br><span style="font-size:10px;opacity:0.8;">In Review</span>', value: payload.sections.B.length, color: '#f39c12' },
-    { label: '超期未上传<br><span style="font-size:10px;opacity:0.8;">Overdue</span>', value: payload.sections.C.length, color: payload.sections.C.length > 0 ? '#e74c3c' : '#2c3e50' },
+    { label: '未上传<br><span style="font-size:10px;opacity:0.8;">Unuploaded</span>', value: payload.sections.C.length, color: payload.sections.C.length > 0 ? '#e74c3c' : '#2c3e50' },
     { label: '跟进项<br><span style="font-size:10px;opacity:0.8;">Follow-ups</span>',
       value: payload.sections.D_owner.dueSoon.length + payload.sections.D_owner.overdue.length + payload.sections.D_verifier.length,
       color: payload.sections.D_owner.overdue.length > 0 ? '#e74c3c' : '#2c3e50' }
@@ -640,22 +643,29 @@ function _ur_buildSectionC(items) {
     '问题描述<br><span style="font-size:0.8em;opacity:0.9;">Description</span>',
     '责任人<br><span style="font-size:0.8em;opacity:0.9;">Owner</span>',
     '分配日期<br><span style="font-size:0.8em;opacity:0.9;">Assign Date</span>',
-    '超期天数<br><span style="font-size:0.8em;opacity:0.9;">Overdue Days</span>'
+    '未上传天数<br><span style="font-size:0.8em;opacity:0.9;">Days</span>'
   ];
 
   var rows = display.map(function(item) {
+    var isOverdue = item.overdueDays >= 7;
     return [
       _ur_escapeHtml(item.id || '-'),
       _ur_escapeHtml(item.machineId || '-'),
       '<span style="word-wrap:break-word;">' + _ur_escapeHtml(item.description || '-') + '</span>',
       _ur_escapeHtml(extractNameFromPersonField(item.owner) || '-'),
       formatVariableAsDate(item.assignDate) || '-',
-      _ur_buildBadge(item.overdueDays, true)
+      _ur_buildBadge(item.overdueDays, isOverdue)
     ];
   });
 
-  var html = _ur_buildSectionTitle('三', '超期未上传报告', 'Overdue Unuploaded Reports', items.length, '#d32f2f');
-  html += _ur_buildTable(headers, rows, 'linear-gradient(135deg,#e74c3c,#c0392b)', '#fff5f5');
+  // 有超期项用红色主题，否则用中性色
+  var hasOverdue = items.some(function(r) { return r.overdueDays >= 7; });
+  var titleColor = hasOverdue ? '#d32f2f' : '#e67e22';
+  var tableGradient = hasOverdue ? 'linear-gradient(135deg,#e74c3c,#c0392b)' : 'linear-gradient(135deg,#f39c12,#e67e22)';
+  var rowBg = hasOverdue ? '#fff5f5' : '#fffbf0';
+
+  var html = _ur_buildSectionTitle('三', '未上传报告', 'Unuploaded Reports', items.length, titleColor);
+  html += _ur_buildTable(headers, rows, tableGradient, rowBg);
   html += _ur_buildTruncationNote(items.length, maxShow);
   return html;
 }
