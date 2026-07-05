@@ -131,7 +131,6 @@ function milestoneReminder(e) {
       var triggerType = "";
       if (days === 0) triggerType = "到期当天";
       else if (days === 1) triggerType = "提前1天";
-      else if (days === 2) triggerType = "提前2天";
       else if (days < 0) triggerType = "超期" + Math.abs(days) + "天";
       if (!triggerType) return;
 
