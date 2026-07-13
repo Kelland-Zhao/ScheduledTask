@@ -42,16 +42,18 @@ function syncAttendanceFromEE(e) {
 
     // 2. 逐日读取 E&E 数据并组装行（缓存 sheet 引用避免重复查找）
     var allRows = [];
-    var sheetCache = {}; // monthKey → sheet
+    var sheetCache = {};   // monthKey → sheet | null
+    var skippedMonths = {}; // monthKey → [dates]
 
     dates.forEach(function (targetDate) {
       var monthKey = targetDate.substring(0, 7); // "2026-07"
-      if (!sheetCache[monthKey]) {
-        sheetCache[monthKey] = _ee_findMonthSheet(targetDate);
+      if (!(monthKey in sheetCache)) {
+        sheetCache[monthKey] = _ee_findMonthSheet(targetDate) || null;
       }
       var eeSheet = sheetCache[monthKey];
       if (!eeSheet) {
-        console.warn("跳过 " + targetDate + "：未找到对应月度 sheet");
+        if (!skippedMonths[monthKey]) skippedMonths[monthKey] = [];
+        skippedMonths[monthKey].push(targetDate);
         return;
       }
 
@@ -101,6 +103,15 @@ function syncAttendanceFromEE(e) {
 
       console.log(targetDate + ": " + eeData.length + " 人 → 三工序 " + Object.keys(seen).length + " 条");
     });
+
+    // 汇总未找到月度 sheet 的日期
+    var skippedMonthKeys = Object.keys(skippedMonths);
+    if (skippedMonthKeys.length > 0) {
+      skippedMonthKeys.forEach(function (mk) {
+        var skippedDates = skippedMonths[mk];
+        console.warn("未找到 " + mk + " 月度 sheet，跳过以下日期: " + skippedDates.join(", "));
+      });
+    }
 
     // 3. 批量写入（先清除所有目标日期的旧数据，再一次性写入）
     _ee_writeToAttendanceSync(dates, allRows);
