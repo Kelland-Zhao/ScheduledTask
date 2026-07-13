@@ -335,17 +335,23 @@ function _sc_buildEmailHtml(clerkName, undaList, weekInfo) {
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
   html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto">';
 
-  // ===== 头部（模式A，不含Logo） =====
-  html += '<div style="background:#E60012;color:white;padding:16px 24px">';
+  // ===== 头部（模式A 含Logo，参考 22号脚本） =====
+  html += '<div style="background:#E60012;color:white;padding:14px 28px">';
+  html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%"><tr>';
+  html += '<td style="vertical-align:middle">';
   html += '<h2 style="margin:0;font-size:20px">考勤安排提醒</h2>';
-  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px">日期：' + weekInfo.monday + ' 周（' + weekRange + '）</p>';
-  html += '<p style="margin:4px 0 0;opacity:0.7;font-size:12px">发送时间：' + nowStr + '</p>';
+  html += '<p style="margin:4px 0 0;opacity:0.85;font-size:12px">发送时间：' + nowStr + '</p>';
+  html += '</td>';
+  html += '<td style="width:50px;vertical-align:middle;text-align:right;padding-left:16px">';
+  html += '<img src="' + _dr_COLGATE_LOGO + '" style="height:36px;display:block" alt="Colgate">';
+  html += '</td></tr></table>';
   html += '</div>';
 
   // ===== 正文 =====
   html += '<div style="padding:20px 28px">';
 
   // 考勤员信息
+  html += '<p style="color:#888;font-size:13px;margin:0 0 4px">日期：' + weekInfo.monday + ' 周（' + weekRange + '）</p>';
   html += '<p style="font-size:14px;color:#34495e;margin:0 0 16px">';
   html += '考勤员：<b>' + _sc_escapeHtml(clerkName) + '</b>，以下员工当周考勤尚未填写：';
   html += '</p>';
