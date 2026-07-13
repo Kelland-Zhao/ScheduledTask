@@ -1,8 +1,8 @@
-// V20260712.01 — E&E 考勤数据同步到 EDS 任务安排 AttendanceSync
-// 入口：syncAttendanceFromEE（每日定时 or 手动）
+// V20260713.03 — E&E 考勤数据同步 + 班次顺序自动更新
+// 入口：syncAttendanceFromEE（每日定时）、updateShiftSchedule（每周六定时）
 // 数据源：E&E电子考勤记录 (1dMON_DEcAUH9xRsfOkEF37fIN7DuyVHfNwOoUyd-V-0)
 // 映射表：userID (workshop) + 班次顺序 (shift)
-// 目标表：EDS 任务安排主数据 → AttendanceSync sheet
+// 目标表：EDS 任务安排主数据 → AttendanceSync sheet + 班次顺序 sheet
 
 // ========== 常量 ==========
 const _ee_SOURCE_SS_ID = "1dMON_DEcAUH9xRsfOkEF37fIN7DuyVHfNwOoUyd-V-0";
@@ -439,6 +439,188 @@ function _ee_writeToAttendanceSync(dates, rows) {
   }
 }
 
+// ========== 班次顺序自动更新 ==========
+
+/** 轮换表：早→夜→中→早（每周一更换） */
+var _ee_SHIFT_ROTATION = {
+  '早班': '夜班',
+  '夜班': '中班',
+  '中班': '早班'
+};
+
+/** 参与轮换的组别（D组固定早班，不在sheet中体现） */
+var _ee_ROTATION_GROUPS = ['A', 'B', 'C'];
+
+/**
+ * 自动更新班次顺序 sheet，生成下3周排班
+ * - 轮换规则：每周一更换，早→夜→中→早，D组永远早班
+ * - 预定每周六自动执行（通过定时设置配置），也可手动触发
+ * - 生成范围：下周一 ~ 下下下周日（3周 × 7天 × 3组 = 63行）
+ * @param {Object} e - 定时触发传入的事件对象 { triggerType: "scheduled" }
+ */
+function updateShiftSchedule(e) {
+  var trigger = e && e.triggerType ? "定时" : "手动";
+  var startTime = new Date();
+
+  try {
+    var ss = SpreadsheetApp.openById(_ee_TASK_SS_ID);
+    var ws = ss.getSheetByName("班次顺序");
+    if (!ws) throw new Error("未找到班次顺序 sheet");
+
+    // 1. 读取现有数据
+    var data = ws.getDataRange().getValues();
+
+    // 2. 找到最近一个周一三组齐全的排班状态
+    var latestState = _findLatestShiftState(data);
+    if (!latestState) throw new Error("无法确定当前排班状态，sheet数据不足（需至少一个完整周）");
+
+    console.log("基准周一: " + Utilities.formatDate(latestState.monday, "Asia/Shanghai", "yyyy-MM-dd") +
+                " | A=" + latestState.state.A + " B=" + latestState.state.B + " C=" + latestState.state.C);
+
+    // 3. 计算目标起始日期（下周一）
+    var nextMonday = _getNextMonday();
+    console.log("目标起始周一: " + Utilities.formatDate(nextMonday, "Asia/Shanghai", "yyyy-MM-dd"));
+
+    // 4. 从基准周一到目标周一，逐周应用轮换
+    var weekDiff = Math.round((nextMonday.getTime() - latestState.monday.getTime()) / (7 * 24 * 60 * 60 * 1000));
+    var state = { A: latestState.state.A, B: latestState.state.B, C: latestState.state.C };
+    for (var r = 0; r < weekDiff; r++) {
+      state = {
+        A: _ee_SHIFT_ROTATION[state.A],
+        B: _ee_SHIFT_ROTATION[state.B],
+        C: _ee_SHIFT_ROTATION[state.C]
+      };
+    }
+    if (weekDiff > 0) {
+      console.log("经" + weekDiff + "周轮换后: A=" + state.A + " B=" + state.B + " C=" + state.C);
+    }
+
+    // 5. 生成3周排班
+    var newRows = _generateShiftRows(state, nextMonday, 3);
+
+    // 6. 收集已有日期+组别，去重避免重复写入
+    var existingSet = {};
+    for (var i = 1; i < data.length; i++) {
+      var ed = _ee_normalizeDate(data[i][0]);
+      var eg = String(data[i][2] || "").trim();
+      if (ed && eg) existingSet[ed + "|" + eg] = true;
+    }
+
+    var rowsToAdd = newRows.filter(function(row) {
+      return !existingSet[row[0] + "|" + row[2]];
+    });
+
+    // 7. 追加写入
+    if (rowsToAdd.length > 0) {
+      ws.getRange(data.length + 1, 1, rowsToAdd.length, 3).setValues(rowsToAdd);
+      var expectedTotal = 21 * 3; // 3组 × 7天 × 3周
+      console.log("已添加 " + rowsToAdd.length + " 行（目标" + expectedTotal + "行，跳过重复" + (newRows.length - rowsToAdd.length) + "行）");
+    } else {
+      console.log("无需更新，目标日期已有完整排班数据");
+    }
+
+    var duration = ((new Date()) - startTime) / 1000;
+    try {
+      writeLog("updateShiftSchedule", "成功",
+               "添加" + rowsToAdd.length + "行，起始周一" + Utilities.formatDate(nextMonday, "Asia/Shanghai", "yyyy-MM-dd") + "，耗时" + duration + "s",
+               trigger, "");
+    } catch (e2) {}
+
+    return {
+      success: true,
+      count: rowsToAdd.length,
+      startDate: Utilities.formatDate(nextMonday, "Asia/Shanghai", "yyyy-MM-dd"),
+      duration: duration
+    };
+
+  } catch (err) {
+    console.error("更新班次顺序失败: " + err.message);
+    try { writeLog("updateShiftSchedule", "失败", err.message, trigger, ""); } catch (e2) {}
+    return { success: false, error: err.message };
+  }
+}
+
+/**
+ * 从现有数据中找到最近一个周一的三组排班状态
+ * @param {Array<Array>} data - 含表头的全部行
+ * @returns {{ monday: Date, state: {A: string, B: string, C: string} } | null}
+ */
+function _findLatestShiftState(data) {
+  // dateStr → { group → shift }
+  var dateShiftMap = {};
+  for (var i = 1; i < data.length; i++) {
+    var dateStr = _ee_normalizeDate(data[i][0]);
+    var shift = String(data[i][1] || "").trim();
+    var group = String(data[i][2] || "").trim();
+    if (!dateStr || !shift || !group) continue;
+    if (!dateShiftMap[dateStr]) dateShiftMap[dateStr] = {};
+    dateShiftMap[dateStr][group] = shift;
+  }
+
+  // 按日期倒序找最新一个三组齐全的周一
+  var dates = Object.keys(dateShiftMap).sort(); // 升序
+  for (var j = dates.length - 1; j >= 0; j--) {
+    var ds = dates[j];
+    var parts = ds.split("-");
+    var d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    if (d.getDay() !== 1) continue; // 非周一跳过
+
+    var gm = dateShiftMap[ds];
+    if (gm['A'] && gm['B'] && gm['C']) {
+      return {
+        monday: d,
+        state: { A: gm['A'], B: gm['B'], C: gm['C'] }
+      };
+    }
+  }
+
+  return null;
+}
+
+/** 获取下周一日期 */
+function _getNextMonday() {
+  var now = new Date();
+  var dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  // 周日(0)→+1天, 周一(1)→+7天, 周二-六(2-6)→+(8-dayOfWeek)天
+  var daysUntilMonday = dayOfWeek === 0 ? 1 : (8 - dayOfWeek);
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + daysUntilMonday);
+}
+
+/**
+ * 从起始周一开始生成 N 周的排班行
+ * @param {{A: string, B: string, C: string}} startState - 起始周一的排班
+ * @param {Date} startMonday - 起始周一日期
+ * @param {number} weeks - 生成周数
+ * @returns {Array<Array<string>>} [[日期, 班别, 组别], ...]
+ */
+function _generateShiftRows(startState, startMonday, weeks) {
+  var rows = [];
+  var state = { A: startState.A, B: startState.B, C: startState.C };
+
+  for (var w = 0; w < weeks; w++) {
+    // 第0周不轮换（直接使用 startState），后续每周一轮换
+    if (w > 0) {
+      state = {
+        A: _ee_SHIFT_ROTATION[state.A],
+        B: _ee_SHIFT_ROTATION[state.B],
+        C: _ee_SHIFT_ROTATION[state.C]
+      };
+    }
+
+    var weekStart = new Date(startMonday.getFullYear(), startMonday.getMonth(), startMonday.getDate() + w * 7);
+
+    _ee_ROTATION_GROUPS.forEach(function(group) {
+      for (var d = 0; d < 7; d++) {
+        var date = new Date(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate() + d);
+        var dateStr = Utilities.formatDate(date, "Asia/Shanghai", "yyyy-MM-dd");
+        rows.push([dateStr, state[group], group]);
+      }
+    });
+  }
+
+  return rows;
+}
+
 // ========== 测试函数 ==========
 
 /** 手动测试：同步今天的考勤数据 */
@@ -508,4 +690,11 @@ function testDiagnoseEEDate(dateStr) {
       console.log("  " + p.name + " | " + p.process + " | 组" + p.team + " | " + p.hours + "h | 原始值:" + p.cellRaw);
     });
   }
+}
+
+/** 手动测试：更新班次顺序（生成下3周） */
+function testUpdateShiftSchedule() {
+  console.log("=== 班次顺序更新测试 ===");
+  var result = updateShiftSchedule();
+  console.log("结果: " + JSON.stringify(result));
 }
