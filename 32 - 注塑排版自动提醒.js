@@ -11,7 +11,7 @@ var _sc_TARGET_PROCESS = "INJ";
 var _sc_SENDER_NAME = "考勤排班提醒系统";
 var _sc_EE_URL = "https://docs.google.com/spreadsheets/d/1dMON_DEcAUH9xRsfOkEF37fIN7DuyVHfNwOoUyd-V-0/edit";
 
-var _sc_TEST_MODE = true;
+var _sc_TEST_MODE = false;
 var _sc_TEST_EMAIL = "kelland_zhao@colpal.com";
 
 // ========== 主入口 ==========
