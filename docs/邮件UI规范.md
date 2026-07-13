@@ -47,12 +47,13 @@
 var _dr_COLGATE_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/86/Colgate-Palmolive_%282025%29.svg/500px-Colgate-Palmolive_%282025%29.svg.png";
 ```
 
-**使用位置**：仅 [27 - 注塑工序日报](27%20-%20注塑工序日报.js) 邮件头部右侧（36px 高）。
+**使用位置**：[22 - 注塑工序日报](22%20-%20注塑工序日报.js)、[27 - 注塑工序日报](27%20-%20注塑工序日报.js)、[32 - 注塑排版自动提醒](32%20-%20注塑排版自动提醒.js) 邮件头部右侧（36px 高）。
 
 **规范**：
-- 仅在需要品牌强识别的日报/周报中使用 Logo
+- 日报/周报/排班提醒等正式对外邮件**必须包含 Logo**
 - Logo 高度统一为 `36px`，`display:block`
-- Logo 放在头部右侧，与左侧文字对齐
+- Logo 放在头部右侧，与左侧文字对齐（参考 §3 模式A 含Logo变体）
+- 简单提醒类（Milestone 提醒、故障报告提醒等）**不包含 Logo**
 
 ---
 
@@ -130,7 +131,7 @@ var _dr_COLGATE_LOGO = "https://upload.wikimedia.org/wikipedia/commons/thumb/8/8
 - 副标题：`opacity: 0.95`，`font-size: 14px`
 - 时间戳：`opacity: 0.7`，`font-size: 12px`
 
-**含 Logo 变体**（模块 27 专用）：
+**含 Logo 变体**（模块 22/27/32 使用）：
 
 ```html
 <div style="background: #E60012; color: white; padding: 14px 28px;">
@@ -814,6 +815,7 @@ GmailApp.sendEmail(to, subject, "请使用支持 HTML 的邮件客户端查看�
 | 27-注塑工序日报 | 工序日报系统 | 每天 | A（含 Logo） | 车间排班表 + 备件表 | A |
 | 30-IoT报警监控 | GAS报警监控系统 | 每天 | A（渐变表头） | 多层表头 + 柱状图 | — |
 | 31-注塑测试日报 | 注塑测试日报 | 每天 | D（大圆角+统计条） | 中英双语宽表 | C（双语简洁） |
+| 32-注塑排版自动提醒 | 考勤排班提醒系统 | 每天（周一~周五） | A（含 Logo） | 标准表格（§6.1） | A |
 
 ---
 
