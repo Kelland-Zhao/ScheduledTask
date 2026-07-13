@@ -1,7 +1,7 @@
-// 开机数同步（从 Line日计划 → TB1/TB2 开机数更新）
+// V20260713.01 — 开机数同步（从 Line日计划 → 开机数 sheet 纵表更新）
 // 入口：syncProductionData（每日 09:15 定时 or 手动）
 // 数据源：_pd_SOURCE_SHEET_ID Sheet: 2.6_Line日计划
-// 目标表：_pd_TARGET_SHEET_ID Sheets: TB1, TB2
+// 目标表：_pd_TARGET_SHEET_ID Sheet: 开机数
 
 const _pd_SOURCE_SHEET_ID = "1zNOM35TeOmaZTtaAR4izQdA37cLGSgPhJAw40KkYioQ";
 const _pd_TARGET_SHEET_ID = "1dyS5C7r4pqYIeRT0p1zYzngt0EDCYR4hsswurAsEBYg";
@@ -14,8 +14,8 @@ function syncProductionData(e) {
     const logDetails = [];
 
     const targetSpreadsheet = SpreadsheetApp.openById(_pd_TARGET_SHEET_ID);
-    const tb1Sheet = targetSpreadsheet.getSheetByName("TB1");
-    const tb2Sheet = targetSpreadsheet.getSheetByName("TB2");
+    const mcSheet = targetSpreadsheet.getSheetByName("开机数");
+    if (!mcSheet) throw new Error("未找到'开机数'工作表");
 
     const targetDates = _pd_calculateTargetDates();
     const linePlanData = _pd_readLinePlanData(_pd_SOURCE_SHEET_ID);
@@ -24,24 +24,10 @@ function syncProductionData(e) {
     const machineCountData = _pd_calculateMachineCount(linePlanData, targetDates);
     logDetails.push(`计算开机数: TB1(${Object.keys(machineCountData.TB1).length}), TB2(${Object.keys(machineCountData.TB2).length})`);
 
-    const tb1DateDetails = [];
-    const tb2DateDetails = [];
-    targetDates.forEach(d => {
-      tb1DateDetails.push(`${d.dateShift}(${machineCountData.TB1[d.dateShift] || 0}台)`);
-      tb2DateDetails.push(`${d.dateShift}(${machineCountData.TB2[d.dateShift] || 0}台)`);
-    });
-    logDetails.push(`TB1: ${tb1DateDetails.join(', ')}`);
-    logDetails.push(`TB2: ${tb2DateDetails.join(', ')}`);
-
-    const tb1ExistingData = _pd_getExistingDataWithValues(tb1Sheet);
-    const tb2ExistingData = _pd_getExistingDataWithValues(tb2Sheet);
-
-    const tb1Results = _pd_updateMachineCount(tb1Sheet, machineCountData.TB1, tb1ExistingData);
-    const tb2Results = _pd_updateMachineCount(tb2Sheet, machineCountData.TB2, tb2ExistingData);
+    const results = _pd_updateMachineCountSheet(mcSheet, machineCountData);
 
     const duration = ((new Date()) - startTime) / 1000;
-    logDetails.push(`TB1: 新增${tb1Results.created} 更新${tb1Results.updated} 跳过${tb1Results.skipped}`);
-    logDetails.push(`TB2: 新增${tb2Results.created} 更新${tb2Results.updated} 跳过${tb2Results.skipped}`);
+    logDetails.push(`新增${results.created} 更新${results.updated} 跳过${results.skipped}`);
 
     writeLog("syncProductionData", "成功", logDetails.join("; "), trigger, `耗时${duration}s`);
 
@@ -132,42 +118,53 @@ function _pd_calculateMachineCount(data, targetDates) {
   return result;
 }
 
-function _pd_getExistingDataWithValues(sheet) {
+/** 纵表增量更新：读取现有数据 → 按 dateShift 匹配 → 更新或追加 */
+function _pd_updateMachineCountSheet(sheet, machineCountData) {
+  const results = { created: 0, updated: 0, skipped: 0 };
   const lastRow = sheet.getLastRow();
-  const lastCol = sheet.getLastColumn();
-  if (lastRow < 2 || lastCol < 1) return new Map();
-  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  const values = sheet.getRange(2, 1, 1, lastCol).getValues()[0];
-  const existingData = new Map();
-  headers.forEach((header, index) => {
-    const h = String(header).trim();
-    if (h && h !== "日期班次 / Date & Shift" && h !== "开机数 / Operating Machine Qty") {
-      existingData.set(h, values[index]);
-    }
-  });
-  return existingData;
-}
 
-function _pd_updateMachineCount(sheet, newData, existingData) {
-  const results = { created: 0, updated: 0, skipped: 0, total: 0 };
-  const lastCol = sheet.getLastColumn();
-  let headers = lastCol >= 1 ? sheet.getRange(1, 1, 1, lastCol).getValues()[0] : [];
+  // 读取现有数据，构建 dateShift → {row, tb1, tb2} Map
+  const existingMap = new Map();
+  if (lastRow > 1) {
+    const existing = sheet.getRange(2, 1, lastRow - 1, 3).getValues();
+    existing.forEach((row, i) => {
+      const ds = String(row[0]).trim();
+      if (ds) existingMap.set(ds, { row: i + 2, tb1: row[1], tb2: row[2] });
+    });
+  }
 
-  Object.entries(newData).forEach(([dateShift, newCount]) => {
-    results.total++;
-    const existingCount = existingData.get(dateShift);
-    if (existingCount === undefined || existingCount === null || existingCount === '') {
-      sheet.getRange(1, headers.length + 1).setValue(dateShift);
-      sheet.getRange(2, headers.length + 1).setValue(newCount);
-      headers.push(dateShift);
-      results.created++;
-    } else if (Number(existingCount) !== Number(newCount)) {
-      const colIndex = headers.indexOf(dateShift);
-      if (colIndex !== -1) { sheet.getRange(2, colIndex + 1).setValue(newCount); results.updated++; }
+  // 收集所有 dateShift
+  const allDateShifts = new Set();
+  Object.keys(machineCountData.TB1).forEach(k => allDateShifts.add(k));
+  Object.keys(machineCountData.TB2).forEach(k => allDateShifts.add(k));
+
+  const newRows = [];
+  allDateShifts.forEach(dateShift => {
+    const newTb1 = machineCountData.TB1[dateShift] || 0;
+    const newTb2 = machineCountData.TB2[dateShift] || 0;
+    const exist = existingMap.get(dateShift);
+
+    if (exist) {
+      const oldTb1 = Number(exist.tb1) || 0;
+      const oldTb2 = Number(exist.tb2) || 0;
+      if (oldTb1 !== newTb1 || oldTb2 !== newTb2) {
+        sheet.getRange(exist.row, 2, 1, 2).setValues([[newTb1, newTb2]]);
+        results.updated++;
+      } else {
+        results.skipped++;
+      }
     } else {
-      results.skipped++;
+      newRows.push([dateShift, newTb1, newTb2]);
+      results.created++;
     }
   });
+
+  if (newRows.length > 0) {
+    // 按 dateShift 排序后追加
+    newRows.sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    sheet.getRange(lastRow + 1, 1, newRows.length, 3).setValues(newRows);
+  }
+
   return results;
 }
 
@@ -176,15 +173,19 @@ function testSyncProductionData() {
   try {
     Logger.log("=== 开始测试 ===");
     const targetDates = _pd_calculateTargetDates();
-    Logger.log(`目标日期: ${JSON.stringify(targetDates)}`);
+    Logger.log(`目标日期: ${targetDates.length}个班次`);
     const linePlanData = _pd_readLinePlanData(_pd_SOURCE_SHEET_ID);
-    Logger.log(`读取数据: ${linePlanData.length}条`);
+    Logger.log(`读取Line日计划: ${linePlanData.length}条`);
     if (linePlanData.length > 0) {
       Logger.log(`示例: 车间=${linePlanData[0][0]}, 日期=${linePlanData[0][1]}, AEM=${linePlanData[0][4]}, 机器状况=${linePlanData[0][6]}, 班次=${linePlanData[0][9]}`);
     }
     const machineCountData = _pd_calculateMachineCount(linePlanData, targetDates);
-    Object.entries(machineCountData.TB1).forEach(([ds, c]) => Logger.log(`TB1 ${ds}: ${c}台`));
-    Object.entries(machineCountData.TB2).forEach(([ds, c]) => Logger.log(`TB2 ${ds}: ${c}台`));
+    const allDateShifts = new Set();
+    Object.keys(machineCountData.TB1).forEach(k => allDateShifts.add(k));
+    Object.keys(machineCountData.TB2).forEach(k => allDateShifts.add(k));
+    Array.from(allDateShifts).sort().forEach(ds => {
+      Logger.log(`${ds}: TB1=${machineCountData.TB1[ds] || 0}台, TB2=${machineCountData.TB2[ds] || 0}台`);
+    });
     Logger.log("=== 测试完成 ===");
   } catch (err) {
     Logger.log(`测试失败: ${err.message}`);
