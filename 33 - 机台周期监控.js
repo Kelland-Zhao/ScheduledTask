@@ -435,7 +435,7 @@ function _mc_calcAndWriteAverages() {
   var colIdx = {};
   for (var h = 0; h < header.length; h++) {
     var hName = String(header[h] || "").trim();
-    if (hName === "shift" || hName === "TagName" || hName === "Line" || hName === "TagValue") {
+    if (hName === "shift" || hName === "TagName" || hName === "Line" || hName === "TagValue" || hName === "ProdDate") {
       colIdx[hName] = h;
     }
   }
@@ -449,8 +449,8 @@ function _mc_calcAndWriteAverages() {
   if (lastRow <= 1) return { recordCount: 0, records: [] };
   var rawData = iotSheet.getRange(2, 1, lastRow - 1, iotSheet.getLastColumn()).getValues();
 
-  // 按 Line + shift 分组累计
-  var groups = {};  // key: "Line|shift" -> { sum, count }
+  // 按 Line + shift（夜班附加 ProdDate 以区分前后两段）分组累计
+  var groups = {};  // key: "Line|shift" or "Line|shift|prodDate" for night shift
   for (var r = 0; r < rawData.length; r++) {
     var tagName = String(rawData[r][colIdx.TagName] || "");
     if (tagName.indexOf(_mc_CT_TAG_SUFFIX) < 0) continue;
@@ -461,7 +461,13 @@ function _mc_calcAndWriteAverages() {
 
     if (!line || !shift || isNaN(tagValue)) continue;
 
+    // 夜班(shift=1)按 ProdDate 拆分，避免前后两段混在一起
     var key = line + "|" + shift;
+    if (shift === "1" && "ProdDate" in colIdx) {
+      var pd = String(rawData[r][colIdx.ProdDate] || "").trim();
+      key += "|" + pd;
+    }
+
     if (!groups[key]) groups[key] = { sum: 0, count: 0 };
     groups[key].sum += tagValue;
     groups[key].count++;
@@ -476,6 +482,7 @@ function _mc_calcAndWriteAverages() {
     var parts = key.split("|");
     var line = parts[0];
     var shift = parts[1];
+    var prodDate = parts[2] || "";  // 夜班附加的 ProdDate
 
     // 过滤：只处理标准表中已注册的机台
     if (!stdLookup[line]) return;
@@ -485,6 +492,7 @@ function _mc_calcAndWriteAverages() {
       workcenter: line,
       machineType: stdLookup[line].machineType,
       shift: shift,
+      prodDate: prodDate,
       avgCycle: avg,
       stdCycle: stdLookup[line].stdCycle
     });
@@ -516,7 +524,15 @@ function _mc_calcAndWriteAverages() {
   var updateTime = _mc_formatDateTime(new Date());
   if (records.length > 0) {
     var outputRows = records.map(function (rec) {
-      return [rec.workcenter, rec.machineType, _mc_shiftName(rec.shift), rec.avgCycle, rec.stdCycle, dataDate, updateTime];
+      // 夜班附加日期标注: "夜班(MM-DD)"
+      var shiftLabel = _mc_shiftName(rec.shift);
+      if (rec.shift === "1" && rec.prodDate) {
+        var pdParts = rec.prodDate.split("/");
+        if (pdParts.length >= 2) {
+          shiftLabel += "(" + pdParts[0].padStart(2,"0") + "-" + pdParts[1].padStart(2,"0") + ")";
+        }
+      }
+      return [rec.workcenter, rec.machineType, shiftLabel, rec.avgCycle, rec.stdCycle, dataDate, updateTime];
     });
     actualSheet.getRange(2, 1, outputRows.length, 7).setValues(outputRows);
   }
