@@ -510,3 +510,128 @@ function _mc_getStandardLookup() {
   }
   return lookup;
 }
+
+// ========== Step 4: 超周期报警 ==========
+
+/**
+ * 对比实际周期与标准周期，超阈值则发邮件报警
+ * 仅比较标准周期不为空的记录，avg - std > THRESHOLD
+ * @param {Array} records - Step3 计算结果
+ * @param {string} trigger
+ * @returns {{alarmCount: number}}
+ */
+function _mc_checkAndAlarm(records, trigger) {
+  // 筛选超标的
+  var alarmList = [];
+  for (var i = 0; i < records.length; i++) {
+    var rec = records[i];
+    if (rec.stdCycle === "" || rec.stdCycle === null || rec.stdCycle === undefined) continue;
+    if (isNaN(rec.stdCycle) || isNaN(rec.avgCycle)) continue;
+
+    var diff = Math.round((rec.avgCycle - rec.stdCycle) * 100) / 100;
+    if (diff > _mc_ALARM_THRESHOLD) {
+      alarmList.push({
+        workcenter: rec.workcenter,
+        machineType: rec.machineType,
+        shift: rec.shift,
+        avgCycle: rec.avgCycle,
+        stdCycle: rec.stdCycle,
+        diff: diff
+      });
+    }
+  }
+
+  if (alarmList.length === 0) {
+    console.log("无超周期报警");
+    return { alarmCount: 0 };
+  }
+
+  // 获取收件人
+  var recipients = _mc_getAlarmRecipients();
+  if (recipients.length === 0) {
+    console.warn("无报警收件人，跳过");
+    return { alarmCount: alarmList.length };
+  }
+
+  // 按班别分组
+  var shiftGroups = {};
+  alarmList.forEach(function (a) {
+    var sn = _mc_shiftName(a.shift);
+    if (!shiftGroups[sn]) shiftGroups[sn] = [];
+    shiftGroups[sn].push(a);
+  });
+
+  var to = _mc_TEST_MODE ? _mc_TEST_EMAIL : recipients.join(",");
+  var todayStr = _mc_formatDate(new Date());
+  var nowStr = _mc_formatDateTime(new Date());
+  var subject = "【机台周期报警】 " + todayStr + " — " + alarmList.length + "台超标准";
+  var html = _mc_buildAlarmEmailHtml(shiftGroups, alarmList.length, nowStr);
+
+  try {
+    GmailApp.sendEmail(to, subject, "", { htmlBody: html, name: _mc_SENDER_NAME });
+    console.log("报警邮件已发送: " + alarmList.length + " 条超标");
+  } catch (err) {
+    console.error("报警邮件发送失败: " + err.message);
+    try { writeLog("monitorMachineCycle", "异常", "报警邮件发送失败: " + err.message, trigger, ""); } catch (e4) {}
+  }
+
+  return { alarmCount: alarmList.length };
+}
+
+/**
+ * 构建超周期报警邮件 HTML
+ * @param {Object} shiftGroups — 按班别分组的报警列表
+ * @param {number} totalAlarms
+ * @param {string} nowStr
+ */
+function _mc_buildAlarmEmailHtml(shiftGroups, totalAlarms, nowStr) {
+  var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
+  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto">';
+
+  // 头部 模式A 不含Logo
+  html += '<div style="background:#E60012;color:white;padding:14px 28px">';
+  html += '<h2 style="margin:0;font-size:20px">⚠ 机台周期报警</h2>';
+  html += '<p style="margin:4px 0 0;opacity:0.85;font-size:12px">发送时间：' + nowStr + '</p>';
+  html += '</div>';
+
+  html += '<div style="padding:20px 28px">';
+  html += '<p style="font-size:14px;color:#e74c3c">以下机台平均周期超出标准周期 > ' + _mc_ALARM_THRESHOLD + ' 秒，共 <b>' + totalAlarms + '</b> 项：</p>';
+
+  // 按班别顺序输出：夜班→早班→中班
+  var shiftOrder = ["夜班", "早班", "中班"];
+  for (var s = 0; s < shiftOrder.length; s++) {
+    var sn = shiftOrder[s];
+    var items = shiftGroups[sn];
+    if (!items || items.length === 0) continue;
+
+    html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:20px">' + sn + '（' + items.length + ' 项）</h3>';
+    html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
+    html += '<tr style="background:#E60012;color:white">';
+    html += '<th style="padding:10px;text-align:left">机台号</th>';
+    html += '<th style="padding:10px;text-align:right">平均周期(秒)</th>';
+    html += '<th style="padding:10px;text-align:right">标准周期(秒)</th>';
+    html += '<th style="padding:10px;text-align:right">差值(秒)</th>';
+    html += '</tr>';
+
+    for (var i = 0; i < items.length; i++) {
+      var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
+      html += '<tr style="background:' + bg + '">';
+      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(items[i].workcenter) + '</td>';
+      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].avgCycle + '</td>';
+      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].stdCycle + '</td>';
+      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right;color:#e74c3c;font-weight:bold">+' + items[i].diff + '</td>';
+      html += '</tr>';
+    }
+    html += '</table>';
+  }
+
+  html += '<p style="color:#888;font-size:13px;margin-top:16px">';
+  html += '阈值：平均周期 - 标准周期 > ' + _mc_ALARM_THRESHOLD + ' 秒。请检查相关机台生产状况。';
+  html += '</p>';
+  html += '</div>';
+
+  // 尾部
+  html += '<p style="color:#bdc3c7;font-size:11px;margin-top:32px;padding:0 24px 16px">此邮件由 ' + _mc_SENDER_NAME + ' 自动发送，请勿回复。</p>';
+  html += '</div></body></html>';
+  return html;
+}
