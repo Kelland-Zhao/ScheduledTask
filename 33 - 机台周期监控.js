@@ -97,3 +97,83 @@ function _mc_shiftName(shiftVal) {
   if (s === "3") return "中班";
   return s;
 }
+
+// ========== Step 1: 机台清单同步 ==========
+
+/**
+ * 从 Workcenter 筛选机台，对比标准表，自动补入缺失
+ * @returns {{newCount: number, newMachines: Array<{workcenter: string, machineType: string}>}}
+ */
+function _mc_syncMachines() {
+  var ws = SpreadsheetApp.openById(_mc_WORKCENTER_SS_ID).getSheetByName(_mc_WORKCENTER_SHEET);
+  if (!ws) {
+    console.warn("Workcenter sheet 未找到");
+    return { newCount: 0, newMachines: [] };
+  }
+
+  // 读 Workcenter
+  var data = ws.getDataRange().getValues();
+  // Row 1: header, data from row 2
+  var workcenterMachines = {};
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+    var eVal = String(row[4] || "").trim();  // E列(0-indexed:4) 是否主设备
+    var dVal = String(row[3] || "").trim();  // D列(0-indexed:3) Final Machine Type
+    var aVal = String(row[0] || "").trim();  // A列(0-indexed:0) Workcenter 机台号
+
+    if (eVal === "Y" && dVal === _mc_TARGET_MACHINE_TYPE && aVal) {
+      workcenterMachines[aVal] = dVal;
+    }
+  }
+  console.log("Workcenter " + _mc_TARGET_MACHINE_TYPE + " 机台: " + Object.keys(workcenterMachines).length + " 台");
+
+  // 读标准表现有机台
+  var existing = _mc_getExistingMachines();
+
+  // 找出缺失的
+  var newMachines = [];
+  Object.keys(workcenterMachines).forEach(function (mc) {
+    if (!(mc in existing)) {
+      newMachines.push({ workcenter: mc, machineType: workcenterMachines[mc] });
+    }
+  });
+
+  // 自动补入标准表
+  if (newMachines.length > 0) {
+    var targetSS = SpreadsheetApp.openById(_mc_TARGET_SS_ID);
+    var stdSheet = targetSS.getSheetByName(_mc_STANDARD_SHEET);
+    if (stdSheet) {
+      var lastRow = stdSheet.getLastRow();
+      var nowStr = _mc_formatDateTime(new Date());
+      newMachines.forEach(function (nm, idx) {
+        var row = lastRow + 1 + idx;
+        stdSheet.getRange(row, 1).setValue(nm.workcenter);
+        stdSheet.getRange(row, 2).setValue(nm.machineType);
+        stdSheet.getRange(row, 4).setValue(nowStr);     // 最后更新时间
+        stdSheet.getRange(row, 5).setValue("自动补入");   // 备注
+      });
+    }
+    console.log("自动补入机台: " + newMachines.length + " 台");
+  }
+
+  return { newCount: newMachines.length, newMachines: newMachines };
+}
+
+/**
+ * 读取标准表中已有的机台号集合
+ * @returns {Object<string, boolean>} 机台号 → true
+ */
+function _mc_getExistingMachines() {
+  var ss = SpreadsheetApp.openById(_mc_TARGET_SS_ID);
+  var sheet = ss.getSheetByName(_mc_STANDARD_SHEET);
+  if (!sheet) return {};
+
+  var data = sheet.getDataRange().getValues();
+  var existing = {};
+  // Row 1: header, data from row 2
+  for (var r = 1; r < data.length; r++) {
+    var aVal = String(data[r][0] || "").trim();
+    if (aVal) existing[aVal] = true;
+  }
+  return existing;
+}
