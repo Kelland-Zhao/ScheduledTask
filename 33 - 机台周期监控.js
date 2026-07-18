@@ -670,7 +670,7 @@ function _mc_checkAndAlarm(records, trigger) {
  */
 function _mc_buildAlarmEmailHtml(tbGroups, totalAlarms, nowStr) {
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
-  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto">';
+  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:1200px;margin:0 auto">';
 
   // 头部 模式A 不含Logo
   html += '<div style="background:#E60012;color:white;padding:14px 28px">';
@@ -681,49 +681,59 @@ function _mc_buildAlarmEmailHtml(tbGroups, totalAlarms, nowStr) {
   html += '<div style="padding:20px 28px">';
   html += '<p style="font-size:14px;color:#e74c3c">以下机台平均周期超出标准周期 > ' + _mc_ALARM_THRESHOLD + ' 秒，共 <b>' + totalAlarms + '</b> 项：</p>';
 
+  // 预构建每个TB区域的HTML
   var tbOrder = ["TB1", "TB2"];
+  var tbHtmls = [];
 
   for (var t = 0; t < tbOrder.length; t++) {
     var tb = tbOrder[t];
     var shiftGroups = tbGroups[tb];
-    if (!shiftGroups) continue;
+    if (!shiftGroups) { tbHtmls.push(""); continue; }
 
-    // 收集并排序标签 (YYYY-MM-DD班别, 自然排序即为时间顺序)
     var labels = Object.keys(shiftGroups).sort();
-    if (labels.length === 0) continue;
+    if (labels.length === 0) { tbHtmls.push(""); continue; }
 
-    // 计算该TB区下的总数
     var tbCount = 0;
     labels.forEach(function(l) { tbCount += shiftGroups[l].length; });
 
-    html += '<h2 style="color:#E60012;background:#FFF9F9;padding:8px 16px;margin-top:24px;font-size:16px">' + tb + '（' + tbCount + ' 项）</h2>';
+    var tbHtml = '<h2 style="color:#E60012;background:#FFF9F9;padding:8px 16px;margin-top:0;font-size:16px">' + tb + '（' + tbCount + ' 项）</h2>';
 
     for (var s = 0; s < labels.length; s++) {
       var label = labels[s];
       var items = shiftGroups[label];
       if (!items || items.length === 0) continue;
 
-      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:16px">' + label + '（' + items.length + ' 项）</h3>';
-      html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
-      html += '<tr style="background:#E60012;color:white">';
-      html += '<th style="padding:10px;text-align:left">机台号</th>';
-      html += '<th style="padding:10px;text-align:right">平均周期(秒)</th>';
-      html += '<th style="padding:10px;text-align:right">标准周期(秒)</th>';
-      html += '<th style="padding:10px;text-align:right">差值(秒)</th>';
-      html += '</tr>';
+      tbHtml += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:12px;font-size:14px">' + label + '（' + items.length + ' 项）</h3>';
+      tbHtml += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
+      tbHtml += '<tr style="background:#E60012;color:white">';
+      tbHtml += '<th style="padding:8px;text-align:left">机台号</th>';
+      tbHtml += '<th style="padding:8px;text-align:right">平均周期(秒)</th>';
+      tbHtml += '<th style="padding:8px;text-align:right">标准周期(秒)</th>';
+      tbHtml += '<th style="padding:8px;text-align:right">差值(秒)</th>';
+      tbHtml += '</tr>';
 
       for (var i = 0; i < items.length; i++) {
         var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
-        html += '<tr style="background:' + bg + '">';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(items[i].workcenter) + '</td>';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].avgCycle + '</td>';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].stdCycle + '</td>';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right;color:#e74c3c;font-weight:bold">+' + items[i].diff + '</td>';
-        html += '</tr>';
+        tbHtml += '<tr style="background:' + bg + '">';
+        tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(items[i].workcenter) + '</td>';
+        tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].avgCycle + '</td>';
+        tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].stdCycle + '</td>';
+        tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1;text-align:right;color:#e74c3c;font-weight:bold">+' + items[i].diff + '</td>';
+        tbHtml += '</tr>';
       }
-      html += '</table>';
+      tbHtml += '</table>';
     }
+
+    tbHtmls.push(tbHtml);
   }
+
+  // 两列并列布局
+  html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%"><tr>';
+  for (var c = 0; c < tbHtmls.length; c++) {
+    var colStyle = c === 0 ? 'padding-right:12px' : 'padding-left:12px';
+    html += '<td style="width:50%;vertical-align:top;' + colStyle + '">' + (tbHtmls[c] || '<p style="color:#888">无报警数据</p>') + '</td>';
+  }
+  html += '</tr></table>';
 
   html += '<p style="color:#888;font-size:13px;margin-top:16px">';
   html += '阈值：平均周期 - 标准周期 > ' + _mc_ALARM_THRESHOLD + ' 秒。请检查相关机台生产状况。';
