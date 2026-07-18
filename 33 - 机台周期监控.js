@@ -449,8 +449,9 @@ function _mc_calcAndWriteAverages() {
   if (lastRow <= 1) return { recordCount: 0, records: [] };
   var rawData = iotSheet.getRange(2, 1, lastRow - 1, iotSheet.getLastColumn()).getValues();
 
-  // 按 Line + shift（夜班附加 ProdDate 以区分前后两段）分组累计
-  var groups = {};  // key: "Line|shift" or "Line|shift|prodDate" for night shift
+  // 按 Line + shift + ProdDate 分组累计（所有班别均按日期拆分）
+  var groups = {};  // key: "Line|shift|prodDate"
+  var hasProdDate = "ProdDate" in colIdx;
   for (var r = 0; r < rawData.length; r++) {
     var tagName = String(rawData[r][colIdx.TagName] || "");
     if (tagName.indexOf(_mc_CT_TAG_SUFFIX) < 0) continue;
@@ -461,11 +462,9 @@ function _mc_calcAndWriteAverages() {
 
     if (!line || !shift || isNaN(tagValue)) continue;
 
-    // 夜班(shift=1)按 ProdDate 拆分，避免前后两段混在一起
     var key = line + "|" + shift;
-    if (shift === "1" && "ProdDate" in colIdx) {
-      var pd = String(rawData[r][colIdx.ProdDate] || "").trim();
-      key += "|" + pd;
+    if (hasProdDate) {
+      key += "|" + String(rawData[r][colIdx.ProdDate] || "").trim();
     }
 
     if (!groups[key]) groups[key] = { sum: 0, count: 0 };
@@ -524,9 +523,9 @@ function _mc_calcAndWriteAverages() {
   var updateTime = _mc_formatDateTime(new Date());
   if (records.length > 0) {
     var outputRows = records.map(function (rec) {
-      // 夜班附加日期标注: "夜班(MM-DD)"
+      // 班别附加日期标注: "夜班(07-18)"
       var shiftLabel = _mc_shiftName(rec.shift);
-      if (rec.shift === "1" && rec.prodDate) {
+      if (rec.prodDate) {
         var pdParts = rec.prodDate.split("/");
         if (pdParts.length >= 2) {
           shiftLabel += "(" + pdParts[0].padStart(2,"0") + "-" + pdParts[1].padStart(2,"0") + ")";
