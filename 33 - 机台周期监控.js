@@ -340,3 +340,173 @@ function _mc_buildMaintenanceEmailHtml(newMachines, missingList, nowStr) {
   html += '</div></body></html>';
   return html;
 }
+
+// ========== Step 3: 实际周期计算与写入 ==========
+
+/**
+ * 从 IoT_Data 文件夹获取最新日期的文件
+ * 文件名格式: IoT_CT_Detail_YYYY-MM-DD
+ * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet|null}
+ */
+function _mc_findLatestIoTFile() {
+  var folder = DriveApp.getFolderById(_mc_IOT_FOLDER_ID);
+  var files = folder.getFiles();
+  var latestFileName = "";
+  var latestFile = null;
+
+  while (files.hasNext()) {
+    var file = files.next();
+    var name = file.getName();
+    if (name.indexOf(_mc_IOT_FILE_PREFIX) === 0 && name.indexOf(".gs") < 0) {
+      if (name > latestFileName) {
+        latestFileName = name;
+        latestFile = file;
+      }
+    }
+  }
+
+  if (latestFile) {
+    console.log("最新 IoT 文件: " + latestFileName);
+    return SpreadsheetApp.open(latestFile);
+  }
+  console.warn("IoT_Data 文件夹中未找到文件");
+  return null;
+}
+
+/**
+ * 从最新 IoT 文件计算每机台每班别平均 TagValue
+ * 写入机台周期实际值表（覆盖写入）
+ * @returns {{recordCount: number, records: Array}}
+ */
+function _mc_calcAndWriteAverages() {
+  var iotSS = _mc_findLatestIoTFile();
+  if (!iotSS) {
+    return { recordCount: 0, records: [] };
+  }
+
+  var iotSheet = iotSS.getSheetByName("IoT_CT_Detail");
+  if (!iotSheet) {
+    // 备选：取第一个 sheet
+    var sheets = iotSS.getSheets();
+    if (sheets.length === 0) return { recordCount: 0, records: [] };
+    iotSheet = sheets[0];
+  }
+
+  // 取表头，确定列位置
+  var header = iotSheet.getRange(1, 1, 1, iotSheet.getLastColumn()).getValues()[0];
+  var colIdx = {};
+  for (var h = 0; h < header.length; h++) {
+    var hName = String(header[h] || "").trim();
+    if (hName === "shift" || hName === "TagName" || hName === "Line" || hName === "TagValue") {
+      colIdx[hName] = h;
+    }
+  }
+  if (!("shift" in colIdx) || !("TagName" in colIdx) || !("Line" in colIdx) || !("TagValue" in colIdx)) {
+    console.warn("IoT 表头不完整，缺少必要列");
+    return { recordCount: 0, records: [] };
+  }
+
+  // 读数据行
+  var lastRow = iotSheet.getLastRow();
+  if (lastRow <= 1) return { recordCount: 0, records: [] };
+  var rawData = iotSheet.getRange(2, 1, lastRow - 1, iotSheet.getLastColumn()).getValues();
+
+  // 按 Line + shift 分组累计
+  var groups = {};  // key: "Line|shift" -> { sum, count }
+  for (var r = 0; r < rawData.length; r++) {
+    var tagName = String(rawData[r][colIdx.TagName] || "");
+    if (tagName.indexOf(_mc_CT_TAG_SUFFIX) < 0) continue;
+
+    var line = String(rawData[r][colIdx.Line] || "").trim();
+    var shift = String(rawData[r][colIdx.shift] || "").trim();
+    var tagValue = parseFloat(rawData[r][colIdx.TagValue]);
+
+    if (!line || !shift || isNaN(tagValue)) continue;
+
+    var key = line + "|" + shift;
+    if (!groups[key]) groups[key] = { sum: 0, count: 0 };
+    groups[key].sum += tagValue;
+    groups[key].count++;
+  }
+
+  // 获取标准周期 lookup
+  var stdLookup = _mc_getStandardLookup();
+
+  // 构建结果数组
+  var records = [];
+  Object.keys(groups).forEach(function (key) {
+    var parts = key.split("|");
+    var line = parts[0];
+    var shift = parts[1];
+    var avg = Math.round((groups[key].sum / groups[key].count) * 100) / 100;
+    var machineType = stdLookup[line] ? stdLookup[line].machineType : "";
+    var stdCycle = stdLookup[line] ? stdLookup[line].stdCycle : "";
+
+    records.push({
+      workcenter: line,
+      machineType: machineType,
+      shift: shift,
+      avgCycle: avg,
+      stdCycle: stdCycle
+    });
+  });
+
+  // 按机台号+班别排序（夜早中）
+  var shiftOrder = { "1": 0, "2": 1, "3": 2 };
+  records.sort(function (a, b) {
+    if (a.workcenter !== b.workcenter) return a.workcenter.localeCompare(b.workcenter);
+    return (shiftOrder[a.shift] || 9) - (shiftOrder[b.shift] || 9);
+  });
+
+  // 写入机台周期实际值
+  var targetSS = SpreadsheetApp.openById(_mc_TARGET_SS_ID);
+  var actualSheet = targetSS.getSheetByName(_mc_ACTUAL_SHEET);
+  if (!actualSheet) {
+    console.warn("机台周期实际值 sheet 不存在");
+    return { recordCount: 0, records: records };
+  }
+
+  // 清空旧数据（保留表头）
+  var lastDataRow = actualSheet.getLastRow();
+  if (lastDataRow > 1) {
+    actualSheet.getRange(2, 1, lastDataRow - 1, actualSheet.getLastColumn()).clearContent();
+  }
+
+  // 写入新数据
+  var dataDate = _mc_formatDate(new Date());
+  var updateTime = _mc_formatDateTime(new Date());
+  if (records.length > 0) {
+    var outputRows = records.map(function (rec) {
+      return [rec.workcenter, rec.machineType, _mc_shiftName(rec.shift), rec.avgCycle, rec.stdCycle, dataDate, updateTime];
+    });
+    actualSheet.getRange(2, 1, outputRows.length, 7).setValues(outputRows);
+  }
+
+  console.log("写入实际值: " + records.length + " 行");
+  return { recordCount: records.length, records: records };
+}
+
+/**
+ * 从标准表读取 lookup: 机台号 -> { machineType, stdCycle }
+ * @returns {Object}
+ */
+function _mc_getStandardLookup() {
+  var ss = SpreadsheetApp.openById(_mc_TARGET_SS_ID);
+  var sheet = ss.getSheetByName(_mc_STANDARD_SHEET);
+  if (!sheet) return {};
+
+  var data = sheet.getDataRange().getValues();
+  var lookup = {};
+  for (var r = 1; r < data.length; r++) {
+    var aVal = String(data[r][0] || "").trim();  // 机台号
+    var bVal = String(data[r][1] || "").trim();  // 机型
+    var cVal = data[r][2];                         // 标准周期（数字）
+    if (aVal) {
+      lookup[aVal] = {
+        machineType: bVal,
+        stdCycle: (cVal !== "" && cVal !== null && cVal !== undefined) ? parseFloat(cVal) : null
+      };
+    }
+  }
+  return lookup;
+}
