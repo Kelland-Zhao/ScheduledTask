@@ -98,6 +98,15 @@ function _mc_shiftName(shiftVal) {
   return s;
 }
 
+/** 规范化 ProdDate: Date对象或字符串 → M/D/YYYY */
+function _mc_normalizeProdDate(val) {
+  if (!val) return "";
+  if (val instanceof Date) {
+    return (val.getMonth() + 1) + "/" + val.getDate() + "/" + val.getFullYear();
+  }
+  return String(val).trim();
+}
+
 /** 机台号 → TB区域: H1xxxx = TB1, H2xxxx = TB2 */
 function _mc_getTB(workcenter) {
   var s = String(workcenter || "");
@@ -480,7 +489,7 @@ function _mc_calcAndWriteAverages() {
 
     var key = line + "|" + shift;
     if (hasProdDate) {
-      key += "|" + String(rawData[r][colIdx.ProdDate] || "").trim();
+      key += "|" + _mc_normalizeProdDate(rawData[r][colIdx.ProdDate]);
     }
 
     if (!groups[key]) groups[key] = { sum: 0, count: 0 };
