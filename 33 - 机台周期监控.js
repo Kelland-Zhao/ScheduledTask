@@ -109,6 +109,22 @@ function _mc_getTB(workcenter) {
   return "";
 }
 
+/** 构建班别+日期标签: "2026-07-18夜班" */
+function _mc_shiftLabel(shiftVal, prodDate) {
+  var sn = _mc_shiftName(shiftVal);
+  if (prodDate) {
+    var parts = prodDate.split("/");
+    if (parts.length >= 2) {
+      // prodDate 格式 M/D/YYYY → YYYY-MM-DD
+      var mm = parts[0].padStart(2, "0");
+      var dd = parts[1].padStart(2, "0");
+      var yyyy = parts[2] || "";
+      if (yyyy) sn = yyyy + "-" + mm + "-" + dd + sn;
+    }
+  }
+  return sn;
+}
+
 // ========== Step 1: 机台清单同步 ==========
 
 /**
@@ -588,6 +604,7 @@ function _mc_checkAndAlarm(records, trigger) {
         workcenter: rec.workcenter,
         machineType: rec.machineType,
         shift: rec.shift,
+        prodDate: rec.prodDate,
         avgCycle: rec.avgCycle,
         stdCycle: rec.stdCycle,
         diff: diff
@@ -607,14 +624,14 @@ function _mc_checkAndAlarm(records, trigger) {
     return { alarmCount: alarmList.length };
   }
 
-  // 按 TB → 班别 分组
+  // 按 TB → "YYYY-MM-DD班别" 分组
   var tbGroups = {};
   alarmList.forEach(function (a) {
     var tb = _mc_getTB(a.workcenter) || "其他";
-    var sn = _mc_shiftName(a.shift);
+    var label = _mc_shiftLabel(a.shift, a.prodDate);
     if (!tbGroups[tb]) tbGroups[tb] = {};
-    if (!tbGroups[tb][sn]) tbGroups[tb][sn] = [];
-    tbGroups[tb][sn].push(a);
+    if (!tbGroups[tb][label]) tbGroups[tb][label] = [];
+    tbGroups[tb][label].push(a);
   });
 
   var to = _mc_TEST_MODE ? _mc_TEST_EMAIL : recipients.join(",");
@@ -661,26 +678,28 @@ function _mc_buildAlarmEmailHtml(tbGroups, totalAlarms, nowStr) {
   html += '<p style="font-size:14px;color:#e74c3c">以下机台平均周期超出标准周期 > ' + _mc_ALARM_THRESHOLD + ' 秒，共 <b>' + totalAlarms + '</b> 项：</p>';
 
   var tbOrder = ["TB1", "TB2"];
-  var shiftOrder = ["夜班", "早班", "中班"];
 
   for (var t = 0; t < tbOrder.length; t++) {
     var tb = tbOrder[t];
     var shiftGroups = tbGroups[tb];
     if (!shiftGroups) continue;
 
+    // 收集并排序标签 (YYYY-MM-DD班别, 自然排序即为时间顺序)
+    var labels = Object.keys(shiftGroups).sort();
+    if (labels.length === 0) continue;
+
     // 计算该TB区下的总数
     var tbCount = 0;
-    shiftOrder.forEach(function(sn) { if (shiftGroups[sn]) tbCount += shiftGroups[sn].length; });
-    if (tbCount === 0) continue;
+    labels.forEach(function(l) { tbCount += shiftGroups[l].length; });
 
     html += '<h2 style="color:#E60012;background:#FFF9F9;padding:8px 16px;margin-top:24px;font-size:16px">' + tb + '（' + tbCount + ' 项）</h2>';
 
-    for (var s = 0; s < shiftOrder.length; s++) {
-      var sn = shiftOrder[s];
-      var items = shiftGroups[sn];
+    for (var s = 0; s < labels.length; s++) {
+      var label = labels[s];
+      var items = shiftGroups[label];
       if (!items || items.length === 0) continue;
 
-      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:16px">' + sn + '（' + items.length + ' 项）</h3>';
+      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:16px">' + label + '（' + items.length + ' 项）</h3>';
       html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
       html += '<tr style="background:#E60012;color:white">';
       html += '<th style="padding:10px;text-align:left">机台号</th>';
