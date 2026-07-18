@@ -1,4 +1,4 @@
-// V20260719.01 — 机台周期监控
+// V20260719.02 — 机台周期监控
 // 入口: monitorMachineCycle（每日 8:10 定时 or 手动）
 // Step 1: Workcenter(E=Y,D=6AX) → 同步至机台周期标准
 // Step 2: 检查标准周期为空 → 邮件提醒 S&C 维护
@@ -634,4 +634,45 @@ function _mc_buildAlarmEmailHtml(shiftGroups, totalAlarms, nowStr) {
   html += '<p style="color:#bdc3c7;font-size:11px;margin-top:32px;padding:0 24px 16px">此邮件由 ' + _mc_SENDER_NAME + ' 自动发送，请勿回复。</p>';
   html += '</div></body></html>';
   return html;
+}
+
+// ========== 测试函数 ==========
+
+/** 手动测试完整流程 */
+function testMonitorMachineCycle() {
+  console.log("=== 机台周期监控测试 ===");
+  var prevTestMode = _mc_TEST_MODE;
+  _mc_TEST_MODE = true;
+  monitorMachineCycle();
+  _mc_TEST_MODE = prevTestMode;
+}
+
+/** 诊断: 列出 IoT_Data 文件夹中的文件、标准表机台数量、收件人 */
+function testDiagnoseIoTData() {
+  // 1. IoT 文件列表
+  var folder = DriveApp.getFolderById(_mc_IOT_FOLDER_ID);
+  var files = folder.getFiles();
+  var fileNames = [];
+  while (files.hasNext()) {
+    var name = files.next().getName();
+    if (name.indexOf(_mc_IOT_FILE_PREFIX) === 0) fileNames.push(name);
+  }
+  fileNames.sort();
+  console.log("IoT_Data 文件数: " + fileNames.length);
+  console.log("最新 3 个: " + fileNames.slice(-3).join(", "));
+
+  // 2. 标准表机台
+  var existing = _mc_getExistingMachines();
+  console.log("标准表机台数: " + Object.keys(existing).length);
+  console.log("机台列表: " + Object.keys(existing).slice(0, 10).join(", ") + "...");
+
+  // 3. 收件人
+  var scRecipients = _mc_getSCRecipients();
+  console.log("S&C 收件人: " + scRecipients.length + " → " + scRecipients.join(", "));
+  var alarmRecipients = _mc_getAlarmRecipients();
+  console.log("报警收件人(IDL+S&C): " + alarmRecipients.length + " 人");
+
+  // 4. 标准缺失
+  var stdResult = _mc_checkStandards();
+  console.log("标准周期缺失: " + stdResult.missingCount + " 台");
 }
