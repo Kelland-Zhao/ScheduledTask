@@ -432,22 +432,23 @@ function _mc_calcAndWriteAverages() {
   // 获取标准周期 lookup
   var stdLookup = _mc_getStandardLookup();
 
-  // 构建结果数组
+  // 构建结果数组（仅包含标准表中存在的机台，即仅6AX机型）
   var records = [];
   Object.keys(groups).forEach(function (key) {
     var parts = key.split("|");
     var line = parts[0];
     var shift = parts[1];
-    var avg = Math.round((groups[key].sum / groups[key].count) * 100) / 100;
-    var machineType = stdLookup[line] ? stdLookup[line].machineType : "";
-    var stdCycle = stdLookup[line] ? stdLookup[line].stdCycle : "";
 
+    // 过滤：只处理标准表中已注册的机台
+    if (!stdLookup[line]) return;
+
+    var avg = Math.round((groups[key].sum / groups[key].count) * 100) / 100;
     records.push({
       workcenter: line,
-      machineType: machineType,
+      machineType: stdLookup[line].machineType,
       shift: shift,
       avgCycle: avg,
-      stdCycle: stdCycle
+      stdCycle: stdLookup[line].stdCycle
     });
   });
 
