@@ -620,7 +620,14 @@ function _mc_checkAndAlarm(records, trigger) {
   var to = _mc_TEST_MODE ? _mc_TEST_EMAIL : recipients.join(",");
   var todayStr = _mc_formatDate(new Date());
   var nowStr = _mc_formatDateTime(new Date());
-  var subject = "【机台周期报警】 " + todayStr + " — " + alarmList.length + "台超标准";
+  // 各TB区域报警数
+  var tb1Count = 0, tb2Count = 0;
+  alarmList.forEach(function(a) {
+    var tb = _mc_getTB(a.workcenter);
+    if (tb === "TB1") tb1Count++;
+    else if (tb === "TB2") tb2Count++;
+  });
+  var subject = "【机台周期报警】 " + todayStr + " — TB1 " + tb1Count + "台 TB2 " + tb2Count + "台 超标准";
   var html = _mc_buildAlarmEmailHtml(tbGroups, alarmList.length, nowStr);
 
   try {
