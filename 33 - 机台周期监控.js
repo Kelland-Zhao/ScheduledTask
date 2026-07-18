@@ -535,19 +535,23 @@ function _mc_calcAndWriteAverages() {
   }
 
   // 写入新数据
-  var dataDate = _mc_formatDate(new Date());
   var updateTime = _mc_formatDateTime(new Date());
   if (records.length > 0) {
     var outputRows = records.map(function (rec) {
       // 班别附加日期标注: "夜班(07-18)"
       var shiftLabel = _mc_shiftName(rec.shift);
+      // 数据日期: ProdDate (M/D/YYYY → YYYY-MM-DD)
+      var rowDataDate = "";
       if (rec.prodDate) {
         var pdParts = rec.prodDate.split("/");
         if (pdParts.length >= 2) {
           shiftLabel += "(" + pdParts[0].padStart(2,"0") + "-" + pdParts[1].padStart(2,"0") + ")";
         }
+        if (pdParts.length >= 3) {
+          rowDataDate = pdParts[2] + "-" + pdParts[0].padStart(2,"0") + "-" + pdParts[1].padStart(2,"0");
+        }
       }
-      return [rec.workcenter, rec.machineType, shiftLabel, rec.avgCycle, rec.stdCycle, dataDate, updateTime];
+      return [rec.workcenter, rec.machineType, shiftLabel, rec.avgCycle, rec.stdCycle, rowDataDate, updateTime];
     });
     actualSheet.getRange(2, 1, outputRows.length, 7).setValues(outputRows);
   }
