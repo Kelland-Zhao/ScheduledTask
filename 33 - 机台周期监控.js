@@ -672,10 +672,16 @@ function _mc_buildAlarmEmailHtml(tbGroups, totalAlarms, nowStr) {
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
   html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:1200px;margin:0 auto">';
 
-  // 头部 模式A 不含Logo
+  // 头部 模式A 含Logo
   html += '<div style="background:#E60012;color:white;padding:14px 28px">';
+  html += '<table border="0" cellpadding="0" cellspacing="0" style="width:100%"><tr>';
+  html += '<td style="vertical-align:middle">';
   html += '<h2 style="margin:0;font-size:20px">⚠ 机台周期报警</h2>';
   html += '<p style="margin:4px 0 0;opacity:0.85;font-size:12px">发送时间：' + nowStr + '</p>';
+  html += '</td>';
+  html += '<td style="width:50px;vertical-align:middle;text-align:right;padding-left:16px">';
+  html += '<img src="' + _dr_COLGATE_LOGO + '" style="height:36px;display:block" alt="Colgate">';
+  html += '</td></tr></table>';
   html += '</div>';
 
   html += '<div style="padding:20px 28px">';
