@@ -713,10 +713,27 @@ function _mc_buildAlarmEmailHtml(tbGroups, totalAlarms, nowStr) {
 
     var tbHtml = '<h2 style="color:#E60012;background:#FFF9F9;padding:8px 16px;margin-top:0;font-size:16px">' + tb + '（' + tbCount + ' 项）</h2>';
 
+    // 找出该TB内所有时段都超标的机台（全勤超标）
+    var allShiftWorkcenters = null;
+    labels.forEach(function(l) {
+      var wcSet = {};
+      shiftGroups[l].forEach(function(a) { wcSet[a.workcenter] = true; });
+      if (allShiftWorkcenters === null) {
+        allShiftWorkcenters = wcSet;
+      } else {
+        var intersect = {};
+        Object.keys(allShiftWorkcenters).forEach(function(w) { if (wcSet[w]) intersect[w] = true; });
+        allShiftWorkcenters = intersect;
+      }
+    });
+
     for (var s = 0; s < labels.length; s++) {
       var label = labels[s];
-      var items = shiftGroups[label];
+      var items = shiftGroups[label].slice();  // 浅拷贝以便排序
       if (!items || items.length === 0) continue;
+
+      // 按差值降序排列
+      items.sort(function(a, b) { return b.diff - a.diff; });
 
       tbHtml += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:12px;font-size:14px">' + label + '（' + items.length + ' 项）</h3>';
       tbHtml += '<table style="width:100%;font-size:12px;border-collapse:collapse">';
@@ -728,9 +745,11 @@ function _mc_buildAlarmEmailHtml(tbGroups, totalAlarms, nowStr) {
       tbHtml += '</tr>';
 
       for (var i = 0; i < items.length; i++) {
-        var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
-        tbHtml += '<tr style="background:' + bg + '">';
-        tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(items[i].workcenter) + '</td>';
+        var isAllShift = allShiftWorkcenters && allShiftWorkcenters[items[i].workcenter];
+        var rowBg = isAllShift ? '#fff0f0' : (i % 2 === 0 ? '#ffffff' : '#f8f9fa');
+        var nameStyle = isAllShift ? 'font-weight:bold' : '';
+        tbHtml += '<tr style="background:' + rowBg + '">';
+        tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1;' + nameStyle + '">' + _mc_escapeHtml(items[i].workcenter) + '</td>';
         tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].avgCycle + '</td>';
         tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].stdCycle + '</td>';
         tbHtml += '<td style="padding:8px;border-bottom:1px solid #ecf0f1;text-align:right;color:#e74c3c;font-weight:bold">+' + items[i].diff + '</td>';
