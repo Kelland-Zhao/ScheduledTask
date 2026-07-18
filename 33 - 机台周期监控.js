@@ -98,6 +98,17 @@ function _mc_shiftName(shiftVal) {
   return s;
 }
 
+/** 机台号 → TB区域: H1xxxx = TB1, H2xxxx = TB2 */
+function _mc_getTB(workcenter) {
+  var s = String(workcenter || "");
+  if (s.length >= 2 && s.charAt(0) === "H") {
+    var d = s.charAt(1);
+    if (d === "1") return "TB1";
+    if (d === "2") return "TB2";
+  }
+  return "";
+}
+
 // ========== Step 1: 机台清单同步 ==========
 
 /**
@@ -298,34 +309,29 @@ function _mc_buildMaintenanceEmailHtml(newMachines, missingList, nowStr) {
   } else {
     html += '<p style="font-size:14px;color:#34495e">以下机台需要维护标准周期：</p>';
 
-    // 新增机台
-    if (newMachines.length > 0) {
-      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:20px">新增机台（' + newMachines.length + ' 台）</h3>';
-      html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
-      html += '<tr style="background:#E60012;color:white"><th style="padding:10px;text-align:left">机台号</th><th style="padding:10px;text-align:left">机型</th></tr>';
-      for (var i = 0; i < newMachines.length; i++) {
-        var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
-        html += '<tr style="background:' + bg + '">';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(newMachines[i].workcenter) + '</td>';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(newMachines[i].machineType) + '</td>';
-        html += '</tr>';
-      }
-      html += '</table>';
-    }
+    // 按TB分组
+    var tbGroups = _mc_groupByTB(newMachines, missingList);
+    var tbOrder = ["TB1", "TB2"];
 
-    // 标准缺失
-    if (missingList.length > 0) {
-      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:20px">标准周期未维护（' + missingList.length + ' 台）</h3>';
-      html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
-      html += '<tr style="background:#E60012;color:white"><th style="padding:10px;text-align:left">机台号</th><th style="padding:10px;text-align:left">机型</th></tr>';
-      for (var j = 0; j < missingList.length; j++) {
-        var bg2 = j % 2 === 0 ? '#ffffff' : '#f8f9fa';
-        html += '<tr style="background:' + bg2 + '">';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(missingList[j].workcenter) + '</td>';
-        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(missingList[j].machineType) + '</td>';
-        html += '</tr>';
+    for (var t = 0; t < tbOrder.length; t++) {
+      var tb = tbOrder[t];
+      var tbNew = tbGroups[tb] ? tbGroups[tb].newMachines : [];
+      var tbMissing = tbGroups[tb] ? tbGroups[tb].missingList : [];
+      if (tbNew.length === 0 && tbMissing.length === 0) continue;
+
+      html += '<h2 style="color:#E60012;background:#FFF9F9;padding:8px 16px;margin-top:24px;font-size:16px">' + tb + '</h2>';
+
+      // 新增机台
+      if (tbNew.length > 0) {
+        html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:16px">新增机台（' + tbNew.length + ' 台）</h3>';
+        html += _mc_buildSimpleTable(["机台号", "机型"], tbNew.map(function(m) { return [m.workcenter, m.machineType]; }));
       }
-      html += '</table>';
+
+      // 标准缺失
+      if (tbMissing.length > 0) {
+        html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:16px">标准周期未维护（' + tbMissing.length + ' 台）</h3>';
+        html += _mc_buildSimpleTable(["机台号", "机型"], tbMissing.map(function(m) { return [m.workcenter, m.machineType]; }));
+      }
     }
 
     html += '<p style="color:#e74c3c;font-size:13px;margin-top:12px">请在 ';
@@ -339,6 +345,38 @@ function _mc_buildMaintenanceEmailHtml(newMachines, missingList, nowStr) {
   html += '<p style="color:#bdc3c7;font-size:11px;margin-top:32px;padding:0 24px 16px">此邮件由 ' + _mc_SENDER_NAME + ' 自动发送，请勿回复。</p>';
   html += '</div></body></html>';
   return html;
+}
+
+/** 按TB分组: newMachines + missingList → { TB1: {newMachines:[], missingList:[]}, TB2: {...} } */
+function _mc_groupByTB(newMachines, missingList) {
+  var groups = {};
+  newMachines.forEach(function(m) {
+    var tb = _mc_getTB(m.workcenter) || "其他";
+    if (!groups[tb]) groups[tb] = { newMachines: [], missingList: [] };
+    groups[tb].newMachines.push(m);
+  });
+  missingList.forEach(function(m) {
+    var tb = _mc_getTB(m.workcenter) || "其他";
+    if (!groups[tb]) groups[tb] = { newMachines: [], missingList: [] };
+    groups[tb].missingList.push(m);
+  });
+  return groups;
+}
+
+/** 构建简单两列表格（复用） */
+function _mc_buildSimpleTable(headers, rows) {
+  var h = '<table style="width:100%;font-size:13px;border-collapse:collapse">';
+  h += '<tr style="background:#E60012;color:white">';
+  headers.forEach(function(th) { h += '<th style="padding:10px;text-align:left">' + th + '</th>'; });
+  h += '</tr>';
+  for (var i = 0; i < rows.length; i++) {
+    var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
+    h += '<tr style="background:' + bg + '">';
+    rows[i].forEach(function(td) { h += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(String(td)) + '</td>'; });
+    h += '</tr>';
+  }
+  h += '</table>';
+  return h;
 }
 
 // ========== Step 3: 实际周期计算与写入 ==========
@@ -554,19 +592,21 @@ function _mc_checkAndAlarm(records, trigger) {
     return { alarmCount: alarmList.length };
   }
 
-  // 按班别分组
-  var shiftGroups = {};
+  // 按 TB → 班别 分组
+  var tbGroups = {};
   alarmList.forEach(function (a) {
+    var tb = _mc_getTB(a.workcenter) || "其他";
     var sn = _mc_shiftName(a.shift);
-    if (!shiftGroups[sn]) shiftGroups[sn] = [];
-    shiftGroups[sn].push(a);
+    if (!tbGroups[tb]) tbGroups[tb] = {};
+    if (!tbGroups[tb][sn]) tbGroups[tb][sn] = [];
+    tbGroups[tb][sn].push(a);
   });
 
   var to = _mc_TEST_MODE ? _mc_TEST_EMAIL : recipients.join(",");
   var todayStr = _mc_formatDate(new Date());
   var nowStr = _mc_formatDateTime(new Date());
   var subject = "【机台周期报警】 " + todayStr + " — " + alarmList.length + "台超标准";
-  var html = _mc_buildAlarmEmailHtml(shiftGroups, alarmList.length, nowStr);
+  var html = _mc_buildAlarmEmailHtml(tbGroups, alarmList.length, nowStr);
 
   try {
     GmailApp.sendEmail(to, subject, "", { htmlBody: html, name: _mc_SENDER_NAME });
@@ -585,7 +625,7 @@ function _mc_checkAndAlarm(records, trigger) {
  * @param {number} totalAlarms
  * @param {string} nowStr
  */
-function _mc_buildAlarmEmailHtml(shiftGroups, totalAlarms, nowStr) {
+function _mc_buildAlarmEmailHtml(tbGroups, totalAlarms, nowStr) {
   var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
   html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto">';
 
@@ -598,32 +638,46 @@ function _mc_buildAlarmEmailHtml(shiftGroups, totalAlarms, nowStr) {
   html += '<div style="padding:20px 28px">';
   html += '<p style="font-size:14px;color:#e74c3c">以下机台平均周期超出标准周期 > ' + _mc_ALARM_THRESHOLD + ' 秒，共 <b>' + totalAlarms + '</b> 项：</p>';
 
-  // 按班别顺序输出：夜班→早班→中班
+  var tbOrder = ["TB1", "TB2"];
   var shiftOrder = ["夜班", "早班", "中班"];
-  for (var s = 0; s < shiftOrder.length; s++) {
-    var sn = shiftOrder[s];
-    var items = shiftGroups[sn];
-    if (!items || items.length === 0) continue;
 
-    html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:20px">' + sn + '（' + items.length + ' 项）</h3>';
-    html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
-    html += '<tr style="background:#E60012;color:white">';
-    html += '<th style="padding:10px;text-align:left">机台号</th>';
-    html += '<th style="padding:10px;text-align:right">平均周期(秒)</th>';
-    html += '<th style="padding:10px;text-align:right">标准周期(秒)</th>';
-    html += '<th style="padding:10px;text-align:right">差值(秒)</th>';
-    html += '</tr>';
+  for (var t = 0; t < tbOrder.length; t++) {
+    var tb = tbOrder[t];
+    var shiftGroups = tbGroups[tb];
+    if (!shiftGroups) continue;
 
-    for (var i = 0; i < items.length; i++) {
-      var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
-      html += '<tr style="background:' + bg + '">';
-      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(items[i].workcenter) + '</td>';
-      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].avgCycle + '</td>';
-      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].stdCycle + '</td>';
-      html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right;color:#e74c3c;font-weight:bold">+' + items[i].diff + '</td>';
+    // 计算该TB区下的总数
+    var tbCount = 0;
+    shiftOrder.forEach(function(sn) { if (shiftGroups[sn]) tbCount += shiftGroups[sn].length; });
+    if (tbCount === 0) continue;
+
+    html += '<h2 style="color:#E60012;background:#FFF9F9;padding:8px 16px;margin-top:24px;font-size:16px">' + tb + '（' + tbCount + ' 项）</h2>';
+
+    for (var s = 0; s < shiftOrder.length; s++) {
+      var sn = shiftOrder[s];
+      var items = shiftGroups[sn];
+      if (!items || items.length === 0) continue;
+
+      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:16px">' + sn + '（' + items.length + ' 项）</h3>';
+      html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
+      html += '<tr style="background:#E60012;color:white">';
+      html += '<th style="padding:10px;text-align:left">机台号</th>';
+      html += '<th style="padding:10px;text-align:right">平均周期(秒)</th>';
+      html += '<th style="padding:10px;text-align:right">标准周期(秒)</th>';
+      html += '<th style="padding:10px;text-align:right">差值(秒)</th>';
       html += '</tr>';
+
+      for (var i = 0; i < items.length; i++) {
+        var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
+        html += '<tr style="background:' + bg + '">';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(items[i].workcenter) + '</td>';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].avgCycle + '</td>';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right">' + items[i].stdCycle + '</td>';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1;text-align:right;color:#e74c3c;font-weight:bold">+' + items[i].diff + '</td>';
+        html += '</tr>';
+      }
+      html += '</table>';
     }
-    html += '</table>';
   }
 
   html += '<p style="color:#888;font-size:13px;margin-top:16px">';
