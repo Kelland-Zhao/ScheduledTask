@@ -21,7 +21,7 @@ var _mc_CT_TAG_SUFFIX = ":CT";
 var _mc_SENDER_NAME = "机台周期监控系统";
 var _mc_TIMEZONE = "Asia/Shanghai";
 
-var _mc_TEST_MODE = true;
+var _mc_TEST_MODE = false;
 var _mc_TEST_EMAIL = "kelland_zhao@colpal.com";
 
 // ========== 主入口 ==========
