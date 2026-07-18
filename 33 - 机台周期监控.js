@@ -177,3 +177,166 @@ function _mc_getExistingMachines() {
   }
   return existing;
 }
+
+// ========== Step 2: 标准周期缺失检查 & 收件人 ==========
+
+/**
+ * 扫描标准表 C 列为空的行
+ * @returns {{missingCount: number, missingList: Array<{workcenter: string, machineType: string}>}}
+ */
+function _mc_checkStandards() {
+  var ss = SpreadsheetApp.openById(_mc_TARGET_SS_ID);
+  var sheet = ss.getSheetByName(_mc_STANDARD_SHEET);
+  if (!sheet) return { missingCount: 0, missingList: [] };
+
+  var data = sheet.getDataRange().getValues();
+  var missingList = [];
+  for (var r = 1; r < data.length; r++) {
+    var aVal = String(data[r][0] || "").trim();
+    var cVal = String(data[r][2] || "").trim();
+    var bVal = String(data[r][1] || "").trim();
+    if (aVal && !cVal) {
+      missingList.push({ workcenter: aVal, machineType: bVal });
+    }
+  }
+  return { missingCount: missingList.length, missingList: missingList };
+}
+
+/**
+ * 获取 S&C 收件人列表
+ * userID Row2 表头: A=SAPID, B=NAME, J=GMail, O=工序, P=职位
+ * 筛选: O=INJ, P 含 S&C, J 不为空
+ * @returns {string[]} 邮箱列表
+ */
+function _mc_getSCRecipients() {
+  var ws = SpreadsheetApp.openById(_mc_USER_SS_ID).getSheetByName(_mc_USER_SHEET);
+  if (!ws) return [];
+
+  var data = ws.getDataRange().getValues();
+  var emails = [];
+  for (var r = 2; r < data.length; r++) {
+    var oVal = String(data[r][14] || "").trim();  // O列(0-indexed:14) 工序
+    var pVal = String(data[r][15] || "").trim().toUpperCase();  // P列(0-indexed:15) 职位
+    var jVal = String(data[r][9] || "").trim();   // J列(0-indexed:9) GMail
+
+    if (oVal === "INJ" && pVal.indexOf("S&C") >= 0 && jVal) {
+      if (emails.indexOf(jVal) < 0) emails.push(jVal);
+    }
+  }
+  console.log("S&C 收件人: " + emails.length + " 人");
+  return emails;
+}
+
+/**
+ * 获取 IDL+S&C 收件人列表（报警用）
+ * @returns {string[]} 邮箱列表
+ */
+function _mc_getAlarmRecipients() {
+  var ws = SpreadsheetApp.openById(_mc_USER_SS_ID).getSheetByName(_mc_USER_SHEET);
+  if (!ws) return [];
+
+  var data = ws.getDataRange().getValues();
+  var emails = [];
+  for (var r = 2; r < data.length; r++) {
+    var oVal = String(data[r][14] || "").trim();
+    var pVal = String(data[r][15] || "").trim().toUpperCase();
+    var jVal = String(data[r][9] || "").trim();
+
+    if (oVal === "INJ" && (pVal.indexOf("IDL") >= 0 || pVal.indexOf("S&C") >= 0) && jVal) {
+      if (emails.indexOf(jVal) < 0) emails.push(jVal);
+    }
+  }
+  console.log("报警收件人(IDL+S&C): " + emails.length + " 人");
+  return emails;
+}
+
+/**
+ * 发送维护提醒邮件（Step 1+2 合并）
+ * @param {Array} newMachines - 新增机台列表
+ * @param {Array} missingList - 标准周期缺失列表
+ * @param {string} trigger - "定时" or "手动"
+ */
+function _mc_sendMaintenanceEmail(newMachines, missingList, trigger) {
+  var recipients = _mc_getSCRecipients();
+  if (recipients.length === 0) {
+    console.warn("无 S&C 收件人，跳过维护邮件");
+    return;
+  }
+
+  var to = _mc_TEST_MODE ? _mc_TEST_EMAIL : recipients.join(",");
+  var nowStr = _mc_formatDateTime(new Date());
+  var todayStr = _mc_formatDate(new Date());
+  var subject = "【机台周期标准维护】 " + todayStr;
+  var html = _mc_buildMaintenanceEmailHtml(newMachines, missingList, nowStr);
+
+  try {
+    GmailApp.sendEmail(to, subject, "", { htmlBody: html, name: _mc_SENDER_NAME });
+    console.log("维护邮件已发送: " + (newMachines.length + missingList.length) + " 项待处理");
+  } catch (err) {
+    console.error("维护邮件发送失败: " + err.message);
+  }
+}
+
+/**
+ * 构建维护提醒邮件 HTML
+ */
+function _mc_buildMaintenanceEmailHtml(newMachines, missingList, nowStr) {
+  var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
+  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto">';
+
+  // 头部 模式A 不含Logo
+  html += '<div style="background:#E60012;color:white;padding:14px 28px">';
+  html += '<h2 style="margin:0;font-size:20px">机台周期标准维护</h2>';
+  html += '<p style="margin:4px 0 0;opacity:0.85;font-size:12px">发送时间：' + nowStr + '</p>';
+  html += '</div>';
+
+  html += '<div style="padding:20px 28px">';
+
+  var totalItems = newMachines.length + missingList.length;
+  if (totalItems === 0) {
+    html += '<p style="font-size:14px;color:#27ae60">✅ 所有机台标准周期已维护，无需处理。</p>';
+  } else {
+    html += '<p style="font-size:14px;color:#34495e">以下机台需要维护标准周期：</p>';
+
+    // 新增机台
+    if (newMachines.length > 0) {
+      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:20px">新增机台（' + newMachines.length + ' 台）</h3>';
+      html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
+      html += '<tr style="background:#E60012;color:white"><th style="padding:10px;text-align:left">机台号</th><th style="padding:10px;text-align:left">机型</th></tr>';
+      for (var i = 0; i < newMachines.length; i++) {
+        var bg = i % 2 === 0 ? '#ffffff' : '#f8f9fa';
+        html += '<tr style="background:' + bg + '">';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(newMachines[i].workcenter) + '</td>';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(newMachines[i].machineType) + '</td>';
+        html += '</tr>';
+      }
+      html += '</table>';
+    }
+
+    // 标准缺失
+    if (missingList.length > 0) {
+      html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:20px">标准周期未维护（' + missingList.length + ' 台）</h3>';
+      html += '<table style="width:100%;font-size:13px;border-collapse:collapse">';
+      html += '<tr style="background:#E60012;color:white"><th style="padding:10px;text-align:left">机台号</th><th style="padding:10px;text-align:left">机型</th></tr>';
+      for (var j = 0; j < missingList.length; j++) {
+        var bg2 = j % 2 === 0 ? '#ffffff' : '#f8f9fa';
+        html += '<tr style="background:' + bg2 + '">';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(missingList[j].workcenter) + '</td>';
+        html += '<td style="padding:10px;border-bottom:1px solid #ecf0f1">' + _mc_escapeHtml(missingList[j].machineType) + '</td>';
+        html += '</tr>';
+      }
+      html += '</table>';
+    }
+
+    html += '<p style="color:#e74c3c;font-size:13px;margin-top:12px">请在 ';
+    html += '<a href="https://docs.google.com/spreadsheets/d/' + _mc_TARGET_SS_ID + '/edit" style="color:#E60012;text-decoration:underline">机台周期标准</a>';
+    html += ' 中补录以上机台的<b>标准周期</b>。</p>';
+  }
+
+  html += '</div>';
+
+  // 尾部
+  html += '<p style="color:#bdc3c7;font-size:11px;margin-top:32px;padding:0 24px 16px">此邮件由 ' + _mc_SENDER_NAME + ' 自动发送，请勿回复。</p>';
+  html += '</div></body></html>';
+  return html;
+}
