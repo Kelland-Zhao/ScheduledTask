@@ -407,33 +407,37 @@ function _mc_buildSimpleTable(headers, rows) {
 // ========== Step 3: 实际周期计算与写入 ==========
 
 /**
- * 从 IoT_Data 文件夹获取最新日期的文件
+ * 从 IoT_Data 文件夹获取最新 2 个日期的文件（夜班跨天需要合并）
  * 文件名格式: IoT_CT_Detail_YYYY-MM-DD
- * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet|null}
+ * @returns {GoogleAppsScript.Spreadsheet.Spreadsheet[]} 最新文件数组（1~2个）
  */
-function _mc_findLatestIoTFile() {
+function _mc_findLatestIoTFiles() {
   var folder = DriveApp.getFolderById(_mc_IOT_FOLDER_ID);
   var files = folder.getFiles();
-  var latestFileName = "";
-  var latestFile = null;
+  var allNames = [];
 
   while (files.hasNext()) {
     var file = files.next();
     var name = file.getName();
     if (name.indexOf(_mc_IOT_FILE_PREFIX) === 0 && name.indexOf(".gs") < 0) {
-      if (name > latestFileName) {
-        latestFileName = name;
-        latestFile = file;
-      }
+      allNames.push(name);
     }
   }
 
-  if (latestFile) {
-    console.log("最新 IoT 文件: " + latestFileName);
-    return SpreadsheetApp.open(latestFile);
+  if (allNames.length === 0) {
+    console.warn("IoT_Data 文件夹中未找到文件");
+    return [];
   }
-  console.warn("IoT_Data 文件夹中未找到文件");
-  return null;
+
+  // 按文件名排序（日期格式天然可排序），取最新2个
+  allNames.sort();
+  var latest = allNames.slice(-2);
+  console.log("IoT 文件: " + latest.join(", "));
+
+  return latest.map(function (name) {
+    var f = folder.getFilesByName(name);
+    return f.hasNext() ? SpreadsheetApp.open(f.next()) : null;
+  }).filter(Boolean);
 }
 
 /**
@@ -442,21 +446,20 @@ function _mc_findLatestIoTFile() {
  * @returns {{recordCount: number, records: Array}}
  */
 function _mc_calcAndWriteAverages() {
-  var iotSS = _mc_findLatestIoTFile();
-  if (!iotSS) {
+  var iotSSList = _mc_findLatestIoTFiles();
+  if (iotSSList.length === 0) {
     return { recordCount: 0, records: [] };
   }
 
-  var iotSheet = iotSS.getSheetByName("IoT_CT_Detail");
-  if (!iotSheet) {
-    // 备选：取第一个 sheet
-    var sheets = iotSS.getSheets();
+  // 用第一个文件确定列位置（所有文件结构一致）
+  var firstSS = iotSSList[0];
+  var firstSheet = firstSS.getSheetByName("IoT_CT_Detail");
+  if (!firstSheet) {
+    var sheets = firstSS.getSheets();
     if (sheets.length === 0) return { recordCount: 0, records: [] };
-    iotSheet = sheets[0];
+    firstSheet = sheets[0];
   }
-
-  // 取表头，确定列位置
-  var header = iotSheet.getRange(1, 1, 1, iotSheet.getLastColumn()).getValues()[0];
+  var header = firstSheet.getRange(1, 1, 1, firstSheet.getLastColumn()).getValues()[0];
   var colIdx = {};
   for (var h = 0; h < header.length; h++) {
     var hName = String(header[h] || "").trim();
@@ -468,33 +471,41 @@ function _mc_calcAndWriteAverages() {
     console.warn("IoT 表头不完整，缺少必要列");
     return { recordCount: 0, records: [] };
   }
-
-  // 读数据行
-  var lastRow = iotSheet.getLastRow();
-  if (lastRow <= 1) return { recordCount: 0, records: [] };
-  var rawData = iotSheet.getRange(2, 1, lastRow - 1, iotSheet.getLastColumn()).getValues();
-
-  // 按 Line + shift + ProdDate 分组累计（所有班别均按日期拆分）
-  var groups = {};  // key: "Line|shift|prodDate"
   var hasProdDate = "ProdDate" in colIdx;
-  for (var r = 0; r < rawData.length; r++) {
-    var tagName = String(rawData[r][colIdx.TagName] || "");
-    if (tagName.indexOf(_mc_CT_TAG_SUFFIX) < 0) continue;
 
-    var line = String(rawData[r][colIdx.Line] || "").trim();
-    var shift = String(rawData[r][colIdx.shift] || "").trim();
-    var tagValue = parseFloat(rawData[r][colIdx.TagValue]);
-
-    if (!line || !shift || isNaN(tagValue)) continue;
-
-    var key = line + "|" + shift;
-    if (hasProdDate) {
-      key += "|" + _mc_normalizeProdDate(rawData[r][colIdx.ProdDate]);
+  // 遍历所有文件，合并数据
+  var groups = {};  // key: "Line|shift|prodDate"
+  for (var f = 0; f < iotSSList.length; f++) {
+    var iotSS = iotSSList[f];
+    var iotSheet = iotSS.getSheetByName("IoT_CT_Detail");
+    if (!iotSheet) {
+      var shts = iotSS.getSheets();
+      if (shts.length === 0) continue;
+      iotSheet = shts[0];
     }
+    var lastRow = iotSheet.getLastRow();
+    if (lastRow <= 1) continue;
+    var rawData = iotSheet.getRange(2, 1, lastRow - 1, iotSheet.getLastColumn()).getValues();
 
-    if (!groups[key]) groups[key] = { sum: 0, count: 0 };
-    groups[key].sum += tagValue;
-    groups[key].count++;
+    for (var r = 0; r < rawData.length; r++) {
+      var tagName = String(rawData[r][colIdx.TagName] || "");
+      if (tagName.indexOf(_mc_CT_TAG_SUFFIX) < 0) continue;
+
+      var line = String(rawData[r][colIdx.Line] || "").trim();
+      var shift = String(rawData[r][colIdx.shift] || "").trim();
+      var tagValue = parseFloat(rawData[r][colIdx.TagValue]);
+
+      if (!line || !shift || isNaN(tagValue)) continue;
+
+      var key = line + "|" + shift;
+      if (hasProdDate) {
+        key += "|" + _mc_normalizeProdDate(rawData[r][colIdx.ProdDate]);
+      }
+
+      if (!groups[key]) groups[key] = { sum: 0, count: 0 };
+      groups[key].sum += tagValue;
+      groups[key].count++;
+    }
   }
 
   // 获取标准周期 lookup
