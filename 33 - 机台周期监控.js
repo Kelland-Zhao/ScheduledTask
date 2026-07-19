@@ -529,7 +529,7 @@ function _mc_calcAndWriteAverages() {
     return (shiftOrder[a.shift] || 9) - (shiftOrder[b.shift] || 9);
   });
 
-  // 写入机台周期实际值
+  // 写入机台周期实际值（仅覆盖同日期数据，保留历史）
   var targetSS = SpreadsheetApp.openById(_mc_TARGET_SS_ID);
   var actualSheet = targetSS.getSheetByName(_mc_ACTUAL_SHEET);
   if (!actualSheet) {
@@ -537,32 +537,49 @@ function _mc_calcAndWriteAverages() {
     return { recordCount: 0, records: records };
   }
 
-  // 清空旧数据（保留表头）
+  // 计算本次涉及的日期集合
+  var updateTime = _mc_formatDateTime(new Date());
+  var newDates = {};
+  records.forEach(function (rec) {
+    if (rec.prodDate) {
+      var pdParts = rec.prodDate.split("/");
+      if (pdParts.length >= 3) {
+        var ymd = pdParts[2] + "-" + pdParts[0].padStart(2, "0") + "-" + pdParts[1].padStart(2, "0");
+        newDates[ymd] = true;
+      }
+    }
+  });
+
+  // 删除本次涉及日期的旧行（从下往上删，避免行号偏移）
   var lastDataRow = actualSheet.getLastRow();
-  if (lastDataRow > 1) {
-    actualSheet.getRange(2, 1, lastDataRow - 1, actualSheet.getLastColumn()).clearContent();
+  if (lastDataRow > 1 && Object.keys(newDates).length > 0) {
+    var existingDates = actualSheet.getRange(2, 6, lastDataRow - 1, 1).getValues(); // F列=数据日期
+    for (var dr = existingDates.length - 1; dr >= 0; dr--) {
+      var existDate = String(existingDates[dr][0] || "").trim();
+      if (newDates[existDate]) {
+        actualSheet.deleteRow(dr + 2); // +2: 跳过表头 + 0-indexed修正
+      }
+    }
   }
 
-  // 写入新数据
-  var updateTime = _mc_formatDateTime(new Date());
+  // 追加新数据
   if (records.length > 0) {
+    var appendRow = actualSheet.getLastRow() + 1;
     var outputRows = records.map(function (rec) {
-      // 班别附加日期标注: "夜班(07-18)"
       var shiftLabel = _mc_shiftName(rec.shift);
-      // 数据日期: ProdDate (M/D/YYYY → YYYY-MM-DD)
       var rowDataDate = "";
       if (rec.prodDate) {
-        var pdParts = rec.prodDate.split("/");
-        if (pdParts.length >= 2) {
-          shiftLabel += "(" + pdParts[0].padStart(2,"0") + "-" + pdParts[1].padStart(2,"0") + ")";
+        var pdParts2 = rec.prodDate.split("/");
+        if (pdParts2.length >= 2) {
+          shiftLabel += "(" + pdParts2[0].padStart(2, "0") + "-" + pdParts2[1].padStart(2, "0") + ")";
         }
-        if (pdParts.length >= 3) {
-          rowDataDate = pdParts[2] + "-" + pdParts[0].padStart(2,"0") + "-" + pdParts[1].padStart(2,"0");
+        if (pdParts2.length >= 3) {
+          rowDataDate = pdParts2[2] + "-" + pdParts2[0].padStart(2, "0") + "-" + pdParts2[1].padStart(2, "0");
         }
       }
       return [rec.workcenter, rec.machineType, shiftLabel, rec.avgCycle, rec.stdCycle, rowDataDate, updateTime];
     });
-    actualSheet.getRange(2, 1, outputRows.length, 7).setValues(outputRows);
+    actualSheet.getRange(appendRow, 1, outputRows.length, 7).setValues(outputRows);
   }
 
   console.log("写入实际值: " + records.length + " 行");
