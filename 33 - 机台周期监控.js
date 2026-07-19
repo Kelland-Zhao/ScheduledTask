@@ -473,20 +473,21 @@ function _mc_calcAndWriteAverages() {
   }
   var hasProdDate = "ProdDate" in colIdx;
 
-  // 遍历所有文件，合并数据
-  var groups = {};  // key: "Line|shift|prodDate"
+  // 遍历所有文件，每个文件独立累计，后一个文件覆盖重叠的 key
+  var allFileGroups = [];  // [{key: {sum, count}}, ...]
   for (var f = 0; f < iotSSList.length; f++) {
     var iotSS = iotSSList[f];
     var iotSheet = iotSS.getSheetByName("IoT_CT_Detail");
     if (!iotSheet) {
       var shts = iotSS.getSheets();
-      if (shts.length === 0) continue;
+      if (shts.length === 0) { allFileGroups.push({}); continue; }
       iotSheet = shts[0];
     }
     var lastRow = iotSheet.getLastRow();
-    if (lastRow <= 1) continue;
+    if (lastRow <= 1) { allFileGroups.push({}); continue; }
     var rawData = iotSheet.getRange(2, 1, lastRow - 1, iotSheet.getLastColumn()).getValues();
 
+    var fileGroups = {};
     for (var r = 0; r < rawData.length; r++) {
       var tagName = String(rawData[r][colIdx.TagName] || "");
       if (tagName.indexOf(_mc_CT_TAG_SUFFIX) < 0) continue;
@@ -502,10 +503,20 @@ function _mc_calcAndWriteAverages() {
         key += "|" + _mc_normalizeProdDate(rawData[r][colIdx.ProdDate]);
       }
 
-      if (!groups[key]) groups[key] = { sum: 0, count: 0 };
-      groups[key].sum += tagValue;
-      groups[key].count++;
+      if (!fileGroups[key]) fileGroups[key] = { sum: 0, count: 0 };
+      fileGroups[key].sum += tagValue;
+      fileGroups[key].count++;
     }
+    allFileGroups.push(fileGroups);
+  }
+
+  // 合并：后一个文件的 key 覆盖前一个（最新文件的旧文件重叠时段优先）
+  var groups = {};
+  for (var fi = 0; fi < allFileGroups.length; fi++) {
+    var fg = allFileGroups[fi];
+    Object.keys(fg).forEach(function (k) {
+      groups[k] = fg[k];  // 后者覆盖前者
+    });
   }
 
   // 获取标准周期 lookup
