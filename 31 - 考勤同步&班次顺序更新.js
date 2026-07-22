@@ -23,6 +23,14 @@ const _ee_SYNC_DAYS = 5;
  */
 function syncAttendanceFromEE(e) {
   const trigger = e && e.triggerType ? "定时" : "手动";
+
+  // 防止并发执行（如上次还没跑完下一次就触发了）
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) {
+    console.warn("考勤同步跳过：上次执行尚未完成");
+    return { success: false, error: "locked" };
+  }
+
   const startTime = new Date();
 
   try {
@@ -113,7 +121,7 @@ function syncAttendanceFromEE(e) {
       });
     }
 
-    // 3. 批量写入（先清除所有目标日期的旧数据，再一次性写入）
+    // 3. 覆盖写入（原地覆写目标日期数据，保留历史）
     _ee_writeToAttendanceSync(dates, allRows);
 
     var duration = ((new Date()) - startTime) / 1000;
@@ -382,8 +390,9 @@ function _ee_normalizeDate(val) {
 // ========== AttendanceSync 写入 ==========
 
 /**
- * 清除多个目标日期旧数据，批量写入新数据
- * @param {string[]} dates - 要清除的日期列表
+ * 覆盖写入：先原地覆写新数据，再清除末尾冗余行
+ * 避免 clearContents 裸奔导致中途崩溃数据全丢
+ * @param {string[]} dates - 要覆盖的日期列表
  * @param {Array[]} rows  - 新数据行
  */
 function _ee_writeToAttendanceSync(dates, rows) {
@@ -414,20 +423,17 @@ function _ee_writeToAttendanceSync(dates, rows) {
       }
     }
 
-    if (deletedCount > 0) {
-      // 清空后重写（保留行 + 新行），一次 setValues 完成
-      ws.clearContents();
-      var finalRows = keepRows.concat(rows);
-      if (finalRows.length > 1) {
-        ws.getRange(1, 1, finalRows.length, 11).setValues(finalRows);
+    var finalRows = keepRows.concat(rows);
+    var newTotal = finalRows.length; // 含表头
+
+    if (newTotal > 1) {
+      // 原地覆写：setValues 是原子的，不会留空窗口
+      ws.getRange(1, 1, newTotal, 11).setValues(finalRows);
+      // 新数据比旧数据短 → 清除末尾冗余行
+      if (newTotal < lastRow) {
+        ws.getRange(newTotal + 1, 1, lastRow - newTotal, 11).clearContent();
       }
-      console.log("删除旧数据: " + deletedCount + " 行，保留: " + (keepRows.length - 1) + " 行，写入新数据: " + rows.length + " 行");
-    } else {
-      // 无旧数据，直接追加
-      if (rows.length > 0) {
-        ws.getRange(lastRow + 1, 1, rows.length, rows[0].length).setValues(rows);
-        console.log("写入新数据: " + rows.length + " 行（无旧数据需清除）");
-      }
+      console.log("覆盖旧数据: " + deletedCount + " 行，保留: " + (keepRows.length - 1) + " 行，写入新数据: " + rows.length + " 行");
     }
   } else {
     // 空表，直接写入（含表头）
