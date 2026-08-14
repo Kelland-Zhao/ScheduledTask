@@ -1,4 +1,4 @@
-// V20260713.03 — E&E 考勤数据同步 + 班次顺序自动更新
+// V20260814.01 — E&E 考勤数据同步 + 班次顺序自动更新（修复日期单元格误判为休息；同步窗口扩展为昨天~今天+5）
 // 入口：syncAttendanceFromEE（每日定时）、updateShiftSchedule（每周六定时）
 // 数据源：E&E电子考勤记录 (1dMON_DEcAUH9xRsfOkEF37fIN7DuyVHfNwOoUyd-V-0)
 // 映射表：userID (workshop) + 班次顺序 (shift)
@@ -15,10 +15,12 @@ const _ee_TARGET_PROCESSES = ['INJ', 'TF', 'PK'];
 
 // 同步天数范围：今天 + 未来 N 天（含今天）
 const _ee_SYNC_DAYS = 5;
+// 回看天数：含昨天，保证前一天补录/修正的出勤数据能被同步
+const _ee_SYNC_LOOKBACK_DAYS = 1;
 
 // ========== 主入口 ==========
 /**
- * 从 E&E 考勤表同步 今天~今天+5天 的出勤数据到 AttendanceSync
+ * 从 E&E 考勤表同步 昨天~今天+5天 的出勤数据到 AttendanceSync
  * @param {Object} e - 定时触发传入的事件对象 { triggerType: "scheduled" }，手动调用可不传
  */
 function syncAttendanceFromEE(e) {
@@ -149,11 +151,11 @@ function syncAttendanceFromEE(e) {
 
 // ========== 日期工具 ==========
 
-/** 获取同步日期列表：今天 + 未来 N 天 */
+/** 获取同步日期列表：昨天 ~ 今天+未来 N 天 */
 function _ee_getTargetDates() {
   var dates = [];
   var now = new Date();
-  for (var i = 0; i <= _ee_SYNC_DAYS; i++) {
+  for (var i = -_ee_SYNC_LOOKBACK_DAYS; i <= _ee_SYNC_DAYS; i++) {
     var d = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
     dates.push(Utilities.formatDate(d, "Asia/Shanghai", "yyyy-MM-dd"));
   }
@@ -260,7 +262,7 @@ function _ee_readDailyData(eeSheet, colIndex) {
 
     if (!name) continue;
 
-    var cellValue = String(dayValues[i][0] || "").trim();
+    var cellValue = _ee_cellValueToText(dayValues[i][0]);
     var parsed = _ee_parseCellValue(cellValue);
 
     result.push({
@@ -275,6 +277,19 @@ function _ee_readDailyData(eeSheet, colIndex) {
   }
 
   return result;
+}
+
+/**
+ * 单元格值 → 可解析文本
+ * Sheets 会把 "11/3" 这类录入自动识别为日期（11月3日），getValues() 返回 Date 对象，
+ * String(Date) 是长日期字符串，parseFloat 得到 NaN → 被误判为"休息"。
+ * 这里把日期单元格还原为录入形态 "月/日"，例如 2026-11-03 → "11/3"。
+ */
+function _ee_cellValueToText(v) {
+  if (v instanceof Date) {
+    return (v.getMonth() + 1) + "/" + v.getDate();
+  }
+  return String(v || "").trim();
 }
 
 // E&E 休假/出勤代码映射（来源：E&E Settings sheet F-G列）
