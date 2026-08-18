@@ -15,8 +15,8 @@ const SAR_CONFIG = {
 };
 
 const SAR_FUNC_NAME = "sendSpareArrivalReminder";
-const SAR_EMAIL_COL = 9;      // userID J列 GMail
-const SAR_SUPERVISOR_COL = 60; // userID BI列 直线上级邮箱
+const SAR_EMAIL_COL = 9;      // userID J列 GMail（0-indexed）
+const SAR_SUPERVISOR_COL = 60; // userID BI列 直线上级邮箱（0-indexed）
 
 // ========== 姓名预处理（用于 userID 匹配，同 08 号模块模式）==========
 function _sar_normalizeName(name) {
@@ -66,12 +66,51 @@ function _sar_readReportRows(trigger) {
   return rows;
 }
 
+// ========== 构建 userID 姓名→邮箱映射 ==========
+function _sar_buildUserMap(trigger) {
+  const sheet = SpreadsheetApp.openById(PERMISSION_SPREADSHEET_ID).getSheetByName(PERMISSION_SHEET_NAME);
+  if (!sheet) {
+    writeLog(SAR_FUNC_NAME, "失败", "找不到权限表: " + PERMISSION_SHEET_NAME, trigger, "");
+    return {};
+  }
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 3) {
+    writeLog(SAR_FUNC_NAME, "失败", "权限表数据不足（lastRow=" + lastRow + "）", trigger, "");
+    return {};
+  }
+  // 读取 A~BI（61列），从第3行开始（跳过2行表头），同 08 号模块模式
+  const data = sheet.getRange(3, 1, lastRow - 2, 61).getValues();
+  const map = {};
+  data.forEach(function(row) {
+    const key = _sar_normalizeName(row[1]); // B列 姓名
+    if (!key) return;
+    const email = String(row[SAR_EMAIL_COL] || "").trim().toLowerCase();
+    const supervisorEmail = String(row[SAR_SUPERVISOR_COL] || "").trim().toLowerCase();
+    if (!map[key]) {
+      map[key] = { email: email, supervisorEmail: supervisorEmail };
+    } else if (!map[key].email && email) {
+      map[key].email = email; // 首条无邮箱时补
+    }
+  });
+  writeLog(SAR_FUNC_NAME, "成功", "userID 映射构建完成，共 " + Object.keys(map).length + " 人", trigger, "");
+  return map;
+}
+
 // ========== 临时调试入口（Task 4 删除）==========
 function _sar_debugRead() {
   const rows = _sar_readReportRows("手动");
   console.log("共 " + rows.length + " 条未领出记录");
   if (rows.length > 0) {
     console.log(JSON.stringify(rows[0]));
-    console.log(JSON.stringify(rows[rows.length - 1]));
   }
+  const userMap = _sar_buildUserMap("手动");
+  console.log("userID 映射人数: " + Object.keys(userMap).length);
+  const sampleNames = {};
+  rows.forEach(function(r) {
+    const key = _sar_normalizeName(r.applicant);
+    if (!sampleNames[key]) sampleNames[key] = { applicant: r.applicant, u: userMap[key] };
+  });
+  Object.keys(sampleNames).forEach(function(key) {
+    console.log(key + " → " + JSON.stringify(sampleNames[key].u));
+  });
 }
