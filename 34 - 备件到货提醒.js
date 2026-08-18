@@ -96,35 +96,6 @@ function _sar_buildUserMap(trigger) {
   return map;
 }
 
-// ========== 临时调试入口（Task 4 删除）==========
-function _sar_debugRead() {
-  const rows = _sar_readReportRows("手动");
-  console.log("共 " + rows.length + " 条未领出记录");
-  if (rows.length > 0) {
-    console.log(JSON.stringify(rows[0]));
-  }
-  const userMap = _sar_buildUserMap("手动");
-  console.log("userID 映射人数: " + Object.keys(userMap).length);
-  const sampleNames = {};
-  rows.forEach(function(r) {
-    const key = _sar_normalizeName(r.applicant);
-    if (!sampleNames[key]) sampleNames[key] = { applicant: r.applicant, u: userMap[key] };
-  });
-  Object.keys(sampleNames).forEach(function(key) {
-    console.log(key + " → " + JSON.stringify(sampleNames[key].u));
-  });
-
-  const firstKey = Object.keys(sampleNames)[0];
-  if (firstKey) {
-    const items = rows.filter(function(r) {
-      return _sar_normalizeName(r.applicant) === firstKey;
-    });
-    const body = _sar_buildEmailBody(sampleNames[firstKey].applicant, items, "debug");
-    console.log("正文长度: " + body.length);
-    console.log(body.substring(0, 500));
-  }
-}
-
 // ========== 邮件正文（模式 C：白色卡片+色条 + 渐变表头卡片表格）==========
 function _sar_buildEmailBody(applicant, items, email) {
   var tableRows = "";
@@ -235,4 +206,88 @@ function _sar_buildUnmatchedEmailBody(list) {
     '</div></body></html>';
 
   return htmlBody;
+}
+
+// ========== 主入口 ==========
+function sendSpareArrivalReminder(e) {
+  _sar_run(e ? "定时" : "手动", false);
+}
+
+/** 测试入口：仅发送至 kelland_zhao@colpal.com，主题加【测试】前缀 */
+function testSpareArrivalReminder() {
+  _sar_run("手动", true);
+}
+
+function _sar_run(trigger, testMode) {
+  const startTime = new Date();
+  try {
+    writeLog(SAR_FUNC_NAME, "成功", "开始扫描备件未领出报告（testMode=" + testMode + "）", trigger, "");
+
+    const rows = _sar_readReportRows(trigger);
+    if (rows.length === 0) {
+      writeLog(SAR_FUNC_NAME, "成功", "无未领出备件记录，跳过发送", trigger, "");
+      return;
+    }
+
+    const userMap = _sar_buildUserMap(trigger);
+
+    // 按申请人分组（保留首个原始姓名用于显示）
+    const byName = {};
+    rows.forEach(function(r) {
+      const key = _sar_normalizeName(r.applicant);
+      if (!byName[key]) byName[key] = { applicant: r.applicant, items: [] };
+      byName[key].items.push(r);
+    });
+
+    let sentCount = 0;
+    const unmatched = [];
+    Object.keys(byName).forEach(function(key) {
+      const group = byName[key];
+      const u = userMap[key];
+      if (!u || !u.email) {
+        unmatched.push(group);
+        return;
+      }
+      const htmlBody = _sar_buildEmailBody(group.applicant, group.items, u.email);
+      const subject = (testMode ? "【测试】" : "") +
+        "【备件到货提醒】" + group.applicant + "，您申请的 " + group.items.length + " 件备件待领用";
+      const ccList = [];
+      if (u.supervisorEmail && u.supervisorEmail !== u.email) ccList.push(u.supervisorEmail);
+      if (ccList.indexOf(SAR_CONFIG.ADMIN_EMAIL) === -1) ccList.push(SAR_CONFIG.ADMIN_EMAIL);
+      const toEmail = testMode ? SAR_CONFIG.ADMIN_EMAIL : u.email;
+      try {
+        GmailApp.sendEmail(toEmail, subject, "请使用支持 HTML 的邮件客户端查看此邮件。", {
+          htmlBody: htmlBody,
+          name: SAR_CONFIG.SENDER_NAME,
+          cc: testMode ? "" : ccList.join(","),
+        });
+        sentCount++;
+        writeLog(SAR_FUNC_NAME, "成功", "已发送提醒至 " + u.email + "（" + group.items.length + " 件）", trigger, "");
+      } catch (mailErr) {
+        writeLog(SAR_FUNC_NAME, "失败", "发送邮件至 " + u.email + " 失败: " + mailErr.message, trigger, "");
+      }
+    });
+
+    // 未匹配兜底：汇总一封发 Kelland
+    if (unmatched.length > 0) {
+      const names = unmatched.map(function(g) { return g.applicant; }).join("、");
+      const unmatchedHtml = _sar_buildUnmatchedEmailBody(unmatched);
+      const unmatchedSubject = (testMode ? "【测试】" : "") + "【备件到货提醒】" + unmatched.length + " 位申请人未匹配到 userID，请人工转告";
+      try {
+        GmailApp.sendEmail(SAR_CONFIG.ADMIN_EMAIL, unmatchedSubject, "请使用支持 HTML 的邮件客户端查看此邮件。", {
+          htmlBody: unmatchedHtml,
+          name: SAR_CONFIG.SENDER_NAME,
+        });
+        writeLog(SAR_FUNC_NAME, "警告", "以下申请人未匹配到 userID，已汇总发 Kelland: " + names, trigger, "");
+      } catch (mailErr) {
+        writeLog(SAR_FUNC_NAME, "失败", "未匹配汇总邮件发送失败: " + mailErr.message, trigger, "");
+      }
+    }
+
+    const endTime = new Date();
+    const duration = ((endTime.getTime() - startTime.getTime()) / 1000).toFixed(1);
+    writeLog(SAR_FUNC_NAME, "成功", "备件到货提醒完成，耗时 " + duration + " 秒，发送 " + sentCount + " 封（未匹配 " + unmatched.length + " 组）", trigger, "");
+  } catch (err) {
+    writeLog(SAR_FUNC_NAME, "失败", err.message, trigger, err.stack || "");
+  }
 }
