@@ -1,4 +1,4 @@
-// V20260526.3 — PM KPI 数据写入（按 A/B 匹配后写入 C/D，E:J 为 ArrayFormula）
+// V20260830.01 — PM KPI 数据写入（按 A/B 匹配后写入 C/D，E:J 为 ArrayFormula）
 
 const PM_SOURCE_SS_ID = "1C7z16Ww22dfGxeqKRrBw27J-zmXXStAt2xoEYwL-V24";
 const PM_DEST_SS_ID   = "1KYRwzlYZz9OK8NPAkndhc9MxGlLEILYsRbsMkSvcV_U";
@@ -71,12 +71,12 @@ function writePMKPI(e) {
       const key = String(r[1]  || "").trim();  // B: KeyProcess
       const wc  = String(r[3]  || "").trim();  // D: Workcenter
       if (excluded[wc]) continue;
-      const ym  = String(r[10] || "").trim();  // K: YearMonth
+      const ym  = String(r[11] || "").trim();  // L: YearMonth
       if (!ym) continue;
-      const prodStatus = String(r[12] || "").trim(); // M: 生产状态
+      const prodStatus = String(r[13] || "").trim(); // N: 生产状态
       if (prodStatus !== "生产") continue;
-      const sub  = String(r[11] || "").trim(); // L: SubProcess
-      const perf = String(r[13] || "").trim(); // N: 绩效状态
+      const sub  = String(r[12] || "").trim(); // M: SubProcess
+      const perf = String(r[14] || "").trim(); // O: 绩效状态
 
       const proc = mapProcess(sub, key, wc);
       if (!proc) continue;
