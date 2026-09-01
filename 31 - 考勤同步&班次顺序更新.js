@@ -1,4 +1,5 @@
-// V20260814.01 — E&E 考勤数据同步 + 班次顺序自动更新（修复日期单元格误判为休息；同步窗口扩展为昨天~今天+5）
+// V20260901.01 — E&E 考勤数据同步 + 班次顺序自动更新（新增：跨月周回退上月 sheet 溢出列读取，如 2026.08 中的 9.1~9.7；跳过日期写警告日志；源缺失时不覆盖写入）
+// V20260814.01 — 修复日期单元格误判为休息；同步窗口扩展为昨天~今天+5
 // 入口：syncAttendanceFromEE（每日定时）、updateShiftSchedule（每周六定时）
 // 数据源：E&E电子考勤记录 (1dMON_DEcAUH9xRsfOkEF37fIN7DuyVHfNwOoUyd-V-0)
 // 映射表：userID (workshop) + 班次顺序 (shift)
@@ -53,27 +54,23 @@ function syncAttendanceFromEE(e) {
     // 2. 逐日读取 E&E 数据并组装行（缓存 sheet 引用避免重复查找）
     var allRows = [];
     var sheetCache = {};   // monthKey → sheet | null
-    var skippedMonths = {}; // monthKey → [dates]
+    var skippedDates = []; // [{date, reason}] 跳过的日期及原因
 
     dates.forEach(function (targetDate) {
-      var monthKey = targetDate.substring(0, 7); // "2026-07"
+      var monthKey = targetDate.substring(0, 7); // "2026-09"
       if (!(monthKey in sheetCache)) {
         sheetCache[monthKey] = _ee_findMonthSheet(targetDate) || null;
       }
-      var eeSheet = sheetCache[monthKey];
-      if (!eeSheet) {
-        if (!skippedMonths[monthKey]) skippedMonths[monthKey] = [];
-        skippedMonths[monthKey].push(targetDate);
+
+      // 定位读取位置：当月 sheet 主列；缺失/无列时回退上月 sheet 的次月溢出列（跨月周，如 2026.08 中的 9.1~9.7）
+      var loc = _ee_resolveReadLocation(targetDate, sheetCache);
+      if (loc.skipped) {
+        console.warn("跳过 " + targetDate + "：" + loc.skipped);
+        skippedDates.push({ date: targetDate, reason: loc.skipped });
         return;
       }
 
-      var colIndex = _ee_findDayColumn(eeSheet, targetDate);
-      if (colIndex < 0) {
-        console.warn("跳过 " + targetDate + "：未找到对应列");
-        return;
-      }
-
-      var eeData = _ee_readDailyData(eeSheet, colIndex);
+      var eeData = _ee_readDailyData(loc.sheet, loc.colIndex);
       var dateShiftMap = dateShiftMaps[targetDate] || {};
       var seen = {};
 
@@ -114,20 +111,37 @@ function syncAttendanceFromEE(e) {
       console.log(targetDate + ": " + eeData.length + " 人 → 三工序 " + Object.keys(seen).length + " 条");
     });
 
-    // 汇总未找到月度 sheet 的日期
-    var skippedMonthKeys = Object.keys(skippedMonths);
-    if (skippedMonthKeys.length > 0) {
-      skippedMonthKeys.forEach(function (mk) {
-        var skippedDates = skippedMonths[mk];
-        console.warn("未找到 " + mk + " 月度 sheet，跳过以下日期: " + skippedDates.join(", "));
-      });
+    // 汇总跳过的日期（找不到月度 sheet 或对应列）
+    if (skippedDates.length > 0) {
+      var skipSummary = skippedDates.map(function (s) {
+        return s.date + "(" + s.reason + ")";
+      }).join(", ");
+      console.warn("跳过日期: " + skipSummary);
+      try {
+        writeLog("syncAttendanceFromEE", "警告", "跳过 " + skippedDates.length + " 个日期: " + skipSummary, trigger, "");
+      } catch (e2) {
+        console.warn("writeLog 失败: " + e2.message);
+      }
     }
 
     // 3. 覆盖写入（原地覆写目标日期数据，保留历史）
-    _ee_writeToAttendanceSync(dates, allRows);
+    //    保护：本次未读取到任何数据时跳过写入，避免因源表缺失而清空 AttendanceSync 已有数据
+    if (allRows.length > 0) {
+      _ee_writeToAttendanceSync(dates, allRows);
+    } else {
+      console.warn("本次未读取到任何数据，跳过写入（保留 AttendanceSync 现有数据）");
+      try {
+        writeLog("syncAttendanceFromEE", "警告", "未读取到任何数据，跳过写入", trigger, "");
+      } catch (e2) {
+        console.warn("writeLog 失败: " + e2.message);
+      }
+    }
 
     var duration = ((new Date()) - startTime) / 1000;
     var logDetail = dates[0] + "~" + dates[dates.length - 1] + " 同步 " + allRows.length + " 条，耗时 " + duration + "s";
+    if (skippedDates.length > 0) {
+      logDetail += "，跳过 " + skippedDates.length + " 个日期";
+    }
     console.log(logDetail);
 
     try {
@@ -214,29 +228,68 @@ function _ee_findMonthSheet(targetDate) {
 /**
  * 在 E&E sheet 中找到目标日期对应的列索引（0-indexed）
  * Row 4 是列头行，包含 "1"~"31" 等日期数字
+ * @param {boolean} isOverflow - true 表示目标日期属于该 sheet 的次月（跨月周），只搜 AL=37 起的溢出列；
+ *                               否则只搜当月列 G=6~AK=36（当月 1~31 日固定在此区域，搜溢出区会误中次月同号列）
  */
-function _ee_findDayColumn(eeSheet, targetDate) {
+function _ee_findDayColumn(eeSheet, targetDate, isOverflow) {
   var targetDay = parseInt(targetDate.split("-")[2], 10); // 12
   var targetDayStr = String(targetDay);
 
   var headerRow = eeSheet.getRange(4, 1, 1, eeSheet.getLastColumn()).getValues()[0];
 
-  // 先找当月列（列 G=6 到 AK=36，对应 day 1-31）
-  for (var c = 6; c <= 36 && c < headerRow.length; c++) {
+  var from = isOverflow ? 37 : 6;   // 溢出列从 AL=37 开始
+  var to = isOverflow ? headerRow.length - 1 : 36; // 当月列到 AK=36
+  for (var c = from; c <= to && c < headerRow.length; c++) {
     if (String(headerRow[c] || "").trim() === targetDayStr) {
       return c;
     }
   }
 
-  // 目标日<=31但没找到，可能是跨月（如7月31日后是8月1-7日）
-  // AL=37 开始是次月溢出
-  for (var c2 = 37; c2 < headerRow.length; c2++) {
-    if (String(headerRow[c2] || "").trim() === targetDayStr) {
-      return c2;
-    }
+  return -1;
+}
+
+/** 上月对应的 "YYYY-MM-01"（跨月周回退用，如 2026-09-01 → 2026-08-01） */
+function _ee_prevMonthKeyDate(targetDate) {
+  var parts = targetDate.split("-");
+  var y = parseInt(parts[0], 10);
+  var m = parseInt(parts[1], 10);
+  if (m === 1) { y -= 1; m = 12; } else { m -= 1; }
+  return y + "-" + (m < 10 ? "0" + m : String(m)) + "-01";
+}
+
+/**
+ * 定位指定日期的读取位置
+ * 1) 当月 sheet 主列（G~AK）
+ * 2) 当月 sheet 缺失或找不到该日列，且日期 ≤7 号 → 上月 sheet 的次月溢出列（跨月周）
+ *    如 2026.09 sheet 尚未创建时，9.1~9.7 数据位于 2026.08 的 AL~AR 列
+ * @param {string} targetDate - "2026-09-01"
+ * @param {Object} sheetCache - monthKey → sheet | null
+ * @returns {{sheet: Object, colIndex: number, isOverflow: boolean} | {skipped: string}}
+ */
+function _ee_resolveReadLocation(targetDate, sheetCache) {
+  var monthKey = targetDate.substring(0, 7);
+  var sheet = sheetCache[monthKey];
+  var day = parseInt(targetDate.split("-")[2], 10);
+
+  if (sheet) {
+    var col = _ee_findDayColumn(sheet, targetDate, false);
+    if (col >= 0) return { sheet: sheet, colIndex: col, isOverflow: false };
   }
 
-  return -1;
+  // 回退上月溢出列：仅月内前 7 天可能存在于上月的跨月周
+  if (day <= 7) {
+    var prevSheet = _ee_findMonthSheet(_ee_prevMonthKeyDate(targetDate));
+    if (prevSheet) {
+      var prevCol = _ee_findDayColumn(prevSheet, targetDate, true);
+      if (prevCol >= 0) {
+        console.log("跨月读取: " + targetDate + " ← " + prevSheet.getSheetName() + " 溢出列");
+        return { sheet: prevSheet, colIndex: prevCol, isOverflow: true };
+      }
+    }
+    return { skipped: sheet ? "当月 sheet 与上月溢出列均无该日列" : "未找到当月及上月 sheet" };
+  }
+
+  return { skipped: sheet ? "当月 sheet 无该日列" : "未找到当月 sheet" };
 }
 
 // ========== E&E 数据读取 ==========
@@ -655,11 +708,11 @@ function testSyncAttendanceToday() {
 function testSyncAttendanceDate(dateStr) {
   if (!dateStr) dateStr = _ee_getTargetDate();
   console.log("=== 考勤同步测试（" + dateStr + "） ===");
-  // 临时覆盖目标日期
-  var originalTarget = _ee_getTargetDate;
-  _ee_getTargetDate = function () { return dateStr; };
+  // 临时覆盖同步日期窗口（主流程调用 _ee_getTargetDates，注意是复数）
+  var originalGetDates = _ee_getTargetDates;
+  _ee_getTargetDates = function () { return [dateStr]; };
   var result = syncAttendanceFromEE();
-  _ee_getTargetDate = originalTarget;
+  _ee_getTargetDates = originalGetDates;
   console.log("结果: " + JSON.stringify(result));
 }
 
