@@ -3,7 +3,7 @@
 // Step 1: Workcenter(E=Y,D=6AX) → 同步至机台周期标准
 // Step 2: 检查标准周期为空 → 邮件提醒 S&C 维护
 // Step 3: IoT_Data 最新文件 → 按机台+班别取平均 → 写机台周期实际值
-// Step 4: 平均 vs 标准 > 0.1s → 邮件报警 IDL+S&C
+// Step 4: 平均 vs 标准 > 0.5s → 邮件报警 IDL+S&C
 
 // ========== 常量 ==========
 var _mc_WORKCENTER_SS_ID = "12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM";
@@ -16,7 +16,7 @@ var _mc_IOT_FILE_PREFIX = "IoT_CT_Detail_";
 var _mc_USER_SS_ID = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
 var _mc_USER_SHEET = "userID";
 var _mc_TARGET_MACHINE_TYPE = "6AX";
-var _mc_ALARM_THRESHOLD = 0.1;
+var _mc_ALARM_THRESHOLD = 0.5;
 var _mc_CT_TAG_SUFFIX = ":CT";
 var _mc_SENDER_NAME = "机台周期监控系统";
 var _mc_TIMEZONE = "Asia/Shanghai";
