@@ -1,6 +1,6 @@
 // V20260930.01 — 点检机台核对
 // 入口：checkPointCheckMachines（每日 08:25 定时 or 手动）
-// 逻辑：比对 MachineList(工序=INJ) 与 Workcenter(机器性能列≠闲置) 的机台差异，
+// 逻辑：比对 MachineList(工序=INJ) 与 Workcenter(无需检查Y/N≠Y) 的机台差异，
 //       差异1（点检有/计划账无）→ MachineList 标黄 + 邮件，
 //       差异2（计划账有/点检无）→ 仅邮件，Final Machine Type=6AX/DP/HS 豁免
 // 2026-09-30：Workcenter 表由 11 列改为 19 列，改为按表头名定位列
@@ -12,7 +12,13 @@ const _pc_FILTER_PROCESS = "INJ";         // 工序过滤条件
 
 const _pc_ID_PLAN = "12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM";
 const _pc_SHEET_WORKCENTER = "Workcenter";
-const _pc_EXCLUDE_KEYWORD = "闲置";       // Workcenter 机器性能列排除关键字
+
+// ========== 纳入集判定的表头名（按名定位，不硬编码列号）==========
+const _pc_HEADER_WORKCENTER = "Workcenter";
+const _pc_HEADER_MACHINE_TYPE = "Machine Type";
+const _pc_HEADER_FINAL_TYPE = "Final Machine Type";
+const _pc_HEADER_FLAG = "无需检查Y/N";
+const _pc_FLAG_YES = "Y";
 
 const _pc_ID_PERMISSION = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
 const _pc_SHEET_USERID = "userID";
@@ -32,31 +38,65 @@ function _pc_headerIndex(headerRow) {
   return idx;
 }
 
+/** 机台号比对归一：去空格 + 转大写。非字符串输入安全返回 "" */
+function _pc_normalizeMachineNo(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim().toUpperCase();
+}
+
 /**
- * 把 Workcenter 数据区转成 机台号 → { machineType, machineModel }
+ * 解析 Workcenter，产出纳入集与数据质量问题
+ * 纳入集 = 全部行 − (「无需检查Y/N」= Y)；判据按表头名定位列
  * @param {Array<Array>} dataWC getDataRange().getValues() 全量（含表头行）
- * @param {string} excludeKeyword 机器性能列命中即排除的关键字（闲置）
- * @returns {{map: Object, missing: Array<string>}} missing 非空时调用方应跳过，不要用空 map 继续
+ * @returns {{included: Object, flagged: Object, missing: Array<string>, duplicates: Array<string>, badFlags: Array<string>}}
+ *   missing 非空时调用方应跳过，不要用空 included 继续
  */
-function _pc_buildWorkcenterMap(dataWC, excludeKeyword) {
-  const required = ["Workcenter", "Machine Type", "机器性能", "Final Machine Type"];
+function _pc_buildIncludedSet(dataWC) {
+  const required = [_pc_HEADER_WORKCENTER, _pc_HEADER_MACHINE_TYPE, _pc_HEADER_FINAL_TYPE, _pc_HEADER_FLAG];
   const cols = _pc_headerIndex(dataWC[0] || []);
   const missing = required.filter(function (n) { return cols[n] === undefined; });
-  if (missing.length > 0) return { map: {}, missing: missing };
+  if (missing.length > 0) return { included: {}, flagged: {}, missing: missing, duplicates: [], badFlags: [] };
 
-  const map = {};
+  const included = {};
+  const flagged = {};
+  const duplicates = [];
+  const badFlags = [];
+
   for (let i = 1; i < dataWC.length; i++) {
-    if (String(dataWC[i][cols["机器性能"]] || "").trim() === excludeKeyword) continue;
+    const machineNo = _pc_normalizeMachineNo(dataWC[i][cols[_pc_HEADER_WORKCENTER]]);
+    if (!machineNo) continue;
 
-    const wc = String(dataWC[i][cols["Workcenter"]] || "").trim();
-    if (wc) {
-      map[wc] = {
-        machineType: String(dataWC[i][cols["Machine Type"]] || "").trim(),
-        machineModel: String(dataWC[i][cols["Final Machine Type"]] || "").trim(),
-      };
+    const rawFlag = String(dataWC[i][cols[_pc_HEADER_FLAG]] || "").trim();
+
+    // 非空且不是 Y → 标了却没生效，必须告警而不是静默
+    if (rawFlag !== "" && rawFlag !== _pc_FLAG_YES && badFlags.indexOf(rawFlag) < 0) {
+      badFlags.push(rawFlag);
     }
+
+    if (rawFlag === _pc_FLAG_YES) {
+      flagged[machineNo] = true;
+      delete included[machineNo];   // Y 优先：同号任一行标 Y，整台机就不点检
+      continue;
+    }
+
+    // 已被标 Y 的号优先于其他行，不能因为后面还有一行没标 Y 就把它捞回纳入集
+    if (Object.prototype.hasOwnProperty.call(flagged, machineNo)) {
+      duplicates.push(machineNo);
+      continue;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(included, machineNo)) {
+      duplicates.push(machineNo);   // 重复键取第一条（沿用模块 12 做法）
+      continue;
+    }
+
+    included[machineNo] = {
+      machineType: String(dataWC[i][cols[_pc_HEADER_MACHINE_TYPE]] || "").trim(),
+      machineModel: String(dataWC[i][cols[_pc_HEADER_FINAL_TYPE]] || "").trim(),
+    };
   }
-  return { map: map, missing: [] };
+
+  return { included: included, flagged: flagged, missing: [], duplicates: duplicates, badFlags: badFlags };
 }
 
 // ========== 主入口 ==========
@@ -94,7 +134,7 @@ function checkPointCheckMachines(e) {
       return;
     }
 
-    // 2. 读取 Workcenter，过滤 C列≠闲置
+    // 2. 读取 Workcenter，纳入集 = 全部行 − (无需检查Y/N=Y)
     const ssPlan = SpreadsheetApp.openById(_pc_ID_PLAN);
     const wsWC = ssPlan.getSheetByName(_pc_SHEET_WORKCENTER);
     const dataWC = wsWC.getDataRange().getValues();
@@ -104,14 +144,16 @@ function checkPointCheckMachines(e) {
       return;
     }
 
-    const built = _pc_buildWorkcenterMap(dataWC, _pc_EXCLUDE_KEYWORD);
+    const built = _pc_buildIncludedSet(dataWC);
     if (built.missing.length > 0) {
       writeLog("checkPointCheckMachines", "跳过", "Workcenter 表头缺少字段: " + built.missing.join(", "), trigger, "");
       return;
     }
-    const wcMap = built.map;  // Workcenter → { machineType, machineModel }
+    const wcMap = built.included;  // Workcenter → { machineType, machineModel }
 
-    console.log("Workcenter 有效行数(排除闲置): " + Object.keys(wcMap).length);
+    console.log("Workcenter 纳入集行数(排除无需检查): " + Object.keys(wcMap).length);
+    if (built.badFlags.length > 0) console.warn("无需检查Y/N 异常取值: " + built.badFlags.join(", "));
+    if (built.duplicates.length > 0) console.warn("Workcenter 重复机台号: " + built.duplicates.join(", "));
 
     // 3. 计算差异
     const wcSet = new Set(Object.keys(wcMap));
