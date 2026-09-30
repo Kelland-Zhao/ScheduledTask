@@ -356,22 +356,23 @@ function _pc_run(isScheduled, opts) {
     // 待补全必须取**写入后**的状态：当天新追加的行机型/点检人为空，
     // 若沿用写入前的 injRows，这些行要到次日才进「待补全」区块，
     // 而那正是"安静的欠账"——这个机制存在的全部意义就是让它们当天可见
-    let deleted = [];
     let incomplete = [];
     if (dryRun) {
       incomplete = _pc_collectIncomplete(injRows).concat(plan.append.map(function (a) {
         return { machineNo: a.machineNo, rowData: [_pc_FILTER_PROCESS, a.workshop, "", a.machineNo, ""] };
       }));
     } else {
-      const exec = _pc_executePlan(wsML, dataML, plan, valve, injRows);
-      deleted = exec.deleted;
-      incomplete = exec.incomplete;
+      incomplete = _pc_executePlan(wsML, dataML, plan, valve, injRows).incomplete;
     }
 
     // 9. 邮件
     const result = {
       append: plan.append,
-      deleted: valve.ok ? plan.toDelete : [],
+      // 「删除」区块列的是**计划删除**的机台，不是实际删除的机台。
+      // 安全阀拦下时若传空数组，被拦的这批机台就整个从邮件里消失了 ——
+      // 而阀拦下恰恰是要人复核这批机台后手动放行，看不见就拦得毫无意义。
+      // 「已删除」还是「未执行」由状态列区分（见 _pc_buildEmailHtml 的 statusOf）
+      deleted: plan.toDelete,
       plasmaKept: plan.plasmaKept,
       incomplete: incomplete,
       deleteSkipped: !valve.ok,
@@ -399,8 +400,9 @@ function _pc_run(isScheduled, opts) {
 
     try {
       _pc_sendMail(recipients.join(","), subject, html);
-      const summary = "追加=" + plan.append.length + "台, 删除=" + result.deleted.length + "台"
-        + (valve.ok ? "" : "(安全阀拦下)") + ", 待补全=" + incomplete.length + "行, TO=" + recipients.length + "人";
+      const summary = "追加=" + plan.append.length + "台, 删除="
+        + (valve.ok ? plan.toDelete.length + "台" : "0台(计划" + plan.toDelete.length + "台被安全阀拦下)")
+        + ", 待补全=" + incomplete.length + "行, TO=" + recipients.length + "人";
       writeLog("checkPointCheckMachines", "成功", summary, trigger, snapshotJson);
       console.log("邮件发送成功: " + summary);
     } catch (err) {
@@ -419,8 +421,7 @@ function _pc_run(isScheduled, opts) {
 /**
  * 执行写入：删除 → 追加 → 重新读背景 → 标黄
  * 安全不变量：工序 ≠ INJ 的行，值和背景色一律不写入
- * @returns {{deleted: Array, incomplete: Array}} 实际删除的条目（安全阀拦下时为空）
- *   与写入后仍待补全的行（含刚刚追加的，它们天然机型/点检人为空）
+ * @returns {{incomplete: Array}} 写入后仍待补全的行（含刚刚追加的，它们天然机型/点检人为空）
  */
 function _pc_executePlan(wsML, dataML, plan, valve, injRows) {
   const deleted = valve.ok ? plan.toDelete : [];
@@ -457,7 +458,7 @@ function _pc_executePlan(wsML, dataML, plan, valve, injRows) {
 
   // ---- 标黄：行号已因删除/追加而变，必须重新读背景 ----
   const lastRow = wsML.getLastRow();
-  if (lastRow <= 1) return { deleted: deleted, incomplete: [] };
+  if (lastRow <= 1) return { incomplete: [] };
 
   const bgData = wsML.getRange(1, 1, lastRow, 5).getBackgrounds();
   const freshML = wsML.getRange(1, 1, lastRow, 5).getValues();
@@ -480,7 +481,7 @@ function _pc_executePlan(wsML, dataML, plan, valve, injRows) {
   });
   console.log("标黄完成：待补全 " + incompleteIdx.size + " 行");
 
-  return { deleted: deleted, incomplete: incompleteRows };
+  return { incomplete: incompleteRows };
 }
 
 /** 收集当前 INJ 中的待补全行，供邮件列出 */
@@ -536,6 +537,8 @@ function _pc_sendMail(to, subject, htmlBody) {
 function _pc_buildEmailHtml(result, today) {
   const statusOf = function (reason) {
     if (result.dryRun) return _pc_ST_DEL_PLANNED;
+    // 阀拦下时这些机台**没被删**，状态列必须说实话 —— 这正是状态列存在的理由
+    if (result.deleteSkipped) return _pc_ST_DEL_SKIPPED;
     return reason === "FLAG" ? _pc_ST_DEL_FLAG : _pc_ST_DEL_ABSENT;
   };
 
@@ -562,7 +565,8 @@ function _pc_buildEmailHtml(result, today) {
 
   html += '<table style="width:100%;border-collapse:collapse;margin-bottom:24px"><tr>';
   html += _pc_card(result.dryRun ? "计划追加" : "本次追加", result.append.length, "#27ae60");
-  html += _pc_card(result.dryRun ? "计划删除" : "本次删除", result.deleteSkipped ? 0 : result.deleted.length, "#e74c3c");
+  // 预演与「超阈值未执行」两种情况下都没有真删，标签与数值都说计划
+  html += _pc_card(result.dryRun || result.deleteSkipped ? "计划删除" : "本次删除", result.deleted.length, "#e74c3c");
   html += _pc_card("待补全", result.incomplete.length, "#e67e22");
   html += '</tr></table>';
 
@@ -590,9 +594,10 @@ function _pc_buildEmailHtml(result, today) {
 
   // ===== 本次删除 =====
   if (result.deleted.length > 0 || result.deleteSkipped) {
-    const n = result.deleteSkipped ? 0 : result.deleted.length;
+    const n = result.deleted.length;
     const title = result.dryRun ? "计划删除：" + n + " 台（预演未写入）"
-      : "本次删除：" + n + " 台" + (result.deleteSkipped ? "（" + _pc_ST_DEL_SKIPPED + "）" : "");
+      : result.deleteSkipped ? "计划删除：" + n + " 台（超阈值，未执行）"
+      : "本次删除：" + n + " 台";
     html += _pc_section(title);
     if (result.dryRun) {
       html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">以下机台<b>尚未删除</b>。确认无误后手动运行 checkPointCheckMachines 执行</p>';

@@ -296,25 +296,42 @@ function emptyResult(over) {
   }, over || {});
 }
 
-test('邮件状态列：已添加 / 已删除两种原因 / 待补全 / 仅报告 / 未执行', () => {
+test('邮件状态列：已添加 / 已删除两种原因 / 待补全 / 仅报告', () => {
   const html = globalThis._pc_buildEmailHtml(emptyResult({
     append: [{ machineNo: 'E0EN0001', workshop: 'TB1' }],
     deleted: [
       { machineNo: 'H2FTA001', reason: 'FLAG', snapshot: [mlRow('INJ', 'TB2', '6AX', 'H2FTA001', 'OPC')] },
       { machineNo: 'H2FTA002', reason: 'ABSENT', snapshot: [mlRow('INJ', 'TB2', '3AX', 'H2FTA002', 'OPC')] },
     ],
-    plasmaKept: [{ machineNo: 'P1PLZ001' }],
+    plasmaKept: [{ machineNo: 'PLASMA' }],
     incomplete: [{ machineNo: 'E0EN0001', rowData: mlRow('INJ', 'TB1', '', 'E0EN0001', '') }],
+  }), '2026-09-30');
+
+  assert.match(html, /已添加·需人工维护/);
+  assert.match(html, /已删除·因表11标Y/, '真删了才说已删除');
+  assert.match(html, /已删除·表11查不到/);
+  assert.match(html, /待补全/);
+  assert.match(html, /仅报告·Plasma豁免/);
+  assert.doesNotMatch(html, /未执行/, '没被拦下就不能出现未执行');
+});
+
+test('邮件：安全阀拦下时必须列出被拦的机台，状态为未执行', () => {
+  // 阀拦下的目的就是要人复核这批机台后手动放行 ——
+  // 若邮件里不列出它们，人就无从复核，拦下等于白拦（且是一笔"安静的欠账"）
+  const html = globalThis._pc_buildEmailHtml(emptyResult({
+    deleted: [
+      { machineNo: 'H2FTA001', reason: 'FLAG', snapshot: [mlRow('INJ', 'TB2', '6AX', 'H2FTA001', 'OPC')] },
+      { machineNo: 'H2FTA002', reason: 'ABSENT', snapshot: [mlRow('INJ', 'TB2', '3AX', 'H2FTA002', 'OPC')] },
+    ],
     deleteSkipped: true,
     valveReason: '拟删除 11 台，超过阈值 10',
   }), '2026-09-30');
 
-  assert.match(html, /已添加·需人工维护/);
-  assert.match(html, /已删除·因表11标Y/);
-  assert.match(html, /已删除·表11查不到/);
-  assert.match(html, /待补全/);
-  assert.match(html, /仅报告·Plasma豁免/);
+  assert.match(html, /H2FTA001/, '被拦的机台必须出现在邮件里');
+  assert.match(html, /H2FTA002/);
   assert.match(html, /未执行·超阈值/);
+  assert.match(html, /阈值/, '须说明为什么没执行');
+  assert.doesNotMatch(html, /已删除/, '一台都没删，说「已删除」就是谎报');
 });
 
 test('删除快照含整行字段（可据此恢复）', () => {
