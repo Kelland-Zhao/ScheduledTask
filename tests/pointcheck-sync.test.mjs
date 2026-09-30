@@ -226,3 +226,58 @@ test('标黄：连续行合并成一个区间', () => {
 
   assert.deepEqual(actions, [{ start: 0, count: 3, color: '#FFFF00' }], '一次 setBackgrounds 覆盖 3 行');
 });
+
+test('标黄：真实 getBackgrounds() 形态 —— 小写十六进制与 #ffffff', () => {
+  // getBackgrounds() 返回**小写**十六进制；未设置/已清除的单元格返回 "#ffffff" 而非 null/空串。
+  // 不做归一的话「目标色 ≠ 当前色」恒为真，每次运行都全量重写 —— 这条用例就是它的回归守卫。
+  // 四行构成完整二维：完整/待补全 × 黄/白
+  const bg = [
+    ['#ffff00', '#ffff00', '#ffff00', '#ffff00', '#ffff00'],   // 完整行却留着黄 → 要清除
+    ['#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff'],   // 完整行且白 → 已处目标态，不写
+    ['#ffff00', '#ffff00', '#ffff00', '#ffff00', '#ffff00'],   // 待补全且已是黄 → 已处目标态，不写
+    ['#ffffff', '#ffffff', '#ffffff', '#ffffff', '#ffffff'],   // 待补全且白 → 要标黄
+  ];
+  const actions = globalThis._pc_computeColorActions(bg, new Set([0, 1, 2, 3]), new Set([2, 3]));
+
+  assert.deepEqual(actions, [
+    { start: 0, count: 1, color: null },            // 清除人工遗留的黄
+    { start: 3, count: 1, color: '#FFFF00' },
+  ], '第 1、2 行已处目标态；第 0 行要清除、第 3 行要标黄');
+});
+
+test('标黄：仅空格的当前色视为无色', () => {
+  const bg = [['   ', '   ', '   ', '   ', '   ']];
+  const actions = globalThis._pc_computeColorActions(bg, new Set([0]), new Set([0]));
+
+  assert.deepEqual(actions, [{ start: 0, count: 1, color: '#FFFF00' }]);
+});
+
+test('标黄：非 INJ 行夹在两行待补全之间 → 必须切成两个区间', () => {
+  // 模块最硬的安全不变量所依赖的形状：区间一旦跨过非 INJ 行，就会把 PK/TF 行一起重涂
+  // （表内 INJ 段被 TF/PK 行夹断，例如 1051-1058 那段紧跟在 TF 块之后）
+  const bg = [
+    ['', '', '', '', ''],
+    ['', '', '', '', ''],
+    ['', '', '', '', ''],
+  ];
+  const actions = globalThis._pc_computeColorActions(bg, new Set([0, 2]), new Set([0, 2]));
+
+  assert.deepEqual(actions, [
+    { start: 0, count: 1, color: '#FFFF00' },
+    { start: 2, count: 1, color: '#FFFF00' },
+  ], '不能返回一个跨第 1 行的区间');
+});
+
+test('标黄：中间一行已处于目标态 → 不能把三段合并', () => {
+  const bg = [
+    ['', '', '', '', ''],
+    ['#ffff00', '#ffff00', '#ffff00', '#ffff00', '#ffff00'],
+    ['', '', '', '', ''],
+  ];
+  const actions = globalThis._pc_computeColorActions(bg, new Set([0, 1, 2]), new Set([0, 1, 2]));
+
+  assert.deepEqual(actions, [
+    { start: 0, count: 1, color: '#FFFF00' },
+    { start: 2, count: 1, color: '#FFFF00' },
+  ], '第 1 行不需改色，应作为断点而非被合并进去');
+});

@@ -24,7 +24,21 @@ const _pc_EXEMPT_PLASMA = "Plasma";       // 点检侧独有、表11 完全没�
 // 安全阀：单次删除超过这个机台数就只报告不删。稳态日差异应为 0-3 台，
 // 超阈值几乎必定是上游异常（表头错位、人工误标）而非真有批量变动
 const _pc_DELETE_LIMIT = 10;
-const _pc_HIGHLIGHT = "#FFFF00";          // 待补全行的标黄颜色
+const _pc_HIGHLIGHT = "#FFFF00";          // 待补全行的标黄颜色（写入值，大小写皆可）
+
+/**
+ * 归一化背景色，供「目标色 ≠ 当前色」比较使用。
+ * **必须归一**：`getBackgrounds()` 返回**小写**十六进制，且未设置/已清除的单元格
+ * 返回 `"#ffffff"` 而不是 null/空串。不归一的话比较恒不相等 ——
+ * 每次运行都会把整段 INJ 行重写一遍，「只写变色区间」的约束会失效。
+ * @param {*} value 原始背景色值
+ * @returns {string|null} 归一后的小写色值；无色返回 null
+ */
+function _pc_normalizeBg(value) {
+  const s = String(value === undefined || value === null ? "" : value).trim().toLowerCase();
+  if (s === "" || s === "#ffffff" || s === "white") return null;
+  return s;
+}
 
 const _pc_ID_PERMISSION = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
 const _pc_SHEET_USERID = "userID";
@@ -221,12 +235,19 @@ function _pc_computeColorActions(bgData, injRowIdx, incompleteIdx) {
   let cur = null;
 
   for (let i = 0; i < bgData.length; i++) {
-    const target = (injRowIdx.has(i) && incompleteIdx.has(i)) ? _pc_HIGHLIGHT : null;
-    const isManaged = injRowIdx.has(i);
-    const current = isManaged ? (String((bgData[i] || [])[0] || "").trim() || null) : null;
+    // 非 INJ 行不受管理：不读它的颜色、不为它产生动作，且**必须打断正在累积的区间**
+    // （表内 INJ 段被 PK/TF 行夹断，区间一旦跨过去就会把那些行一起重涂）
+    if (!injRowIdx.has(i)) {
+      if (cur) { actions.push(cur); cur = null; }
+      continue;
+    }
 
-    // 非 INJ 行不管理、不产生动作
-    if (!isManaged || target === current) {
+    const target = incompleteIdx.has(i) ? _pc_HIGHLIGHT : null;
+    // 只读 A 列颜色：本模块写入时整行 A~E 涂同一色，故 A 列即代表整行。
+    // 若将来出现「只涂部分列」的写入，这里会静默失效 —— 届时须改为逐列比较
+    const current = _pc_normalizeBg((bgData[i] || [])[0]);
+
+    if (_pc_normalizeBg(target) === current) {
       if (cur) { actions.push(cur); cur = null; }
       continue;
     }
