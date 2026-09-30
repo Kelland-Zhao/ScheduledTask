@@ -1,9 +1,11 @@
-// V20260930.01 — 点检机台核对
-// 入口：checkPointCheckMachines（每日 08:25 定时 or 手动）
-// 逻辑：比对 MachineList(工序=INJ) 与 Workcenter(无需检查Y/N≠Y) 的机台差异，
-//       差异1（点检有/计划账无）→ MachineList 标黄 + 邮件，
-//       差异2（计划账有/点检无）→ 仅邮件，Final Machine Type=6AX/DP/HS 豁免
-// 2026-09-30：Workcenter 表由 11 列改为 19 列，改为按表头名定位列
+// V20260930.12 — 点检机台核对 + 主数据双向同步
+// 入口：checkPointCheckMachines（每日 08:25 定时 or 手动，手动绕过安全阀）
+// 预演：dryRunPointCheckSync（只报告不写入）
+// 逻辑：纳入集 = Workcenter 全部行 − (「无需检查Y/N」= Y)
+//       纳入集有/MachineList-INJ 无 → 追加到表尾（工序=INJ，车间按第2位推，机型/点检人留空）
+//       MachineList-INJ 有/纳入集无 → 删除该机台号全部 INJ 行（Plasma 机型豁免）
+//       安全阀：拟删 > 10 台 → 只报告不删；手动运行绕过
+// 安全不变量：工序 ≠ INJ 的行，值和背景色一律不写入
 
 // ========== 数据源配置 ==========
 const _pc_ID_POINTCHECK = "1RQql-PrcBWiAQNeg7hQKcocpllSUMRhT5XPrDTVWoBY";
@@ -25,6 +27,21 @@ const _pc_EXEMPT_PLASMA = "Plasma";       // 点检侧独有、表11 完全没�
 // 超阈值几乎必定是上游异常（表头错位、人工误标）而非真有批量变动
 const _pc_DELETE_LIMIT = 10;
 const _pc_HIGHLIGHT = "#FFFF00";          // 待补全行的标黄颜色（写入值，大小写皆可）
+
+// ========== 邮件状态字面量 ==========
+const _pc_ST_ADDED = "已添加·需人工维护";
+const _pc_ST_DEL_FLAG = "已删除·因表11标Y";
+const _pc_ST_DEL_ABSENT = "已删除·表11查不到";
+const _pc_ST_DEL_SKIPPED = "未执行·超阈值";
+const _pc_ST_PLASMA = "仅报告·Plasma豁免";
+const _pc_ST_INCOMPLETE = "待补全";
+// 预演：什么都没写，状态列必须说实话，否则首跑核对时会被误导
+const _pc_ST_ADD_PLANNED = "计划追加·预演未写入";
+const _pc_ST_DEL_PLANNED = "计划删除·预演未写入";
+
+// ========== 邮件中的两张表链接 ==========
+const _pc_URL_POINTCHECK = "https://docs.google.com/spreadsheets/d/" + _pc_ID_POINTCHECK + "/edit#gid=436306312";
+const _pc_URL_PLAN = "https://docs.google.com/spreadsheets/d/" + _pc_ID_PLAN + "/edit#gid=0";
 
 /**
  * 归一化背景色，供「目标色 ≠ 当前色」比较使用。
@@ -264,12 +281,32 @@ function _pc_computeColorActions(bgData, injRowIdx, incompleteIdx) {
 }
 
 // ========== 主入口 ==========
+/**
+ * 主入口：核对 + 同步
+ * @param {Object} e 触发器事件对象。undefined（手动）= 绕过安全阀
+ */
 function checkPointCheckMachines(e) {
-  const trigger = e ? "定时" : "手动";
+  _pc_run(e !== undefined && e !== null, null);
+}
+
+/** 预演入口：只报告不写入。用于上线首次核对将要追加/删除的清单 */
+function dryRunPointCheckSync() {
+  _pc_run(false, { dryRun: true });
+}
+
+/**
+ * 编排：读表 → 算计划 → 过阀 → 写入 → 标黄 → 发信 → 记日志
+ * @param {boolean} isScheduled true=定时（启用安全阀）
+ * @param {Object|null} opts {dryRun: true} 时不执行任何写入
+ */
+function _pc_run(isScheduled, opts) {
+  const dryRun = !!(opts && opts.dryRun);
+  const trigger = dryRun ? "预演" : (isScheduled ? "定时" : "手动");
+
   try {
     console.log("开始执行点检机台核对...");
 
-    // 1. 读取 MachineList，过滤工序=INJ
+    // 1. 读 MachineList，过滤工序=INJ
     const ssPC = SpreadsheetApp.openById(_pc_ID_POINTCHECK);
     const wsML = ssPC.getSheetByName(_pc_SHEET_MACHINELIST);
     const dataML = wsML.getDataRange().getValues();
@@ -279,30 +316,22 @@ function checkPointCheckMachines(e) {
       return;
     }
 
-    const headerML = dataML[0];
-    const injRows = [];              // { rowIndex(1-based), machineNo, rowData[] }
-    const injMachineNos = new Set();
-
+    const injRows = [];
     for (let i = 1; i < dataML.length; i++) {
       if (String(dataML[i][0] || "").trim() === _pc_FILTER_PROCESS) {
-        const machineNo = String(dataML[i][3] || "").trim();
-        injRows.push({ rowIndex: i + 1, machineNo: machineNo, rowData: dataML[i] });
-        if (machineNo) injMachineNos.add(machineNo);
+        injRows.push({ rowIndex: i + 1, machineNo: String(dataML[i][3] || "").trim(), rowData: dataML[i] });
       }
     }
-
     console.log("MachineList INJ 工序行数: " + injRows.length);
-
     if (injRows.length === 0) {
       writeLog("checkPointCheckMachines", "跳过", "MachineList 无 INJ 工序数据", trigger, "");
       return;
     }
 
-    // 2. 读取 Workcenter，纳入集 = 全部行 − (无需检查Y/N=Y)
+    // 2. 读 Workcenter，建纳入集
     const ssPlan = SpreadsheetApp.openById(_pc_ID_PLAN);
     const wsWC = ssPlan.getSheetByName(_pc_SHEET_WORKCENTER);
     const dataWC = wsWC.getDataRange().getValues();
-
     if (dataWC.length <= 1) {
       writeLog("checkPointCheckMachines", "跳过", "Workcenter 为空", trigger, "");
       return;
@@ -313,67 +342,70 @@ function checkPointCheckMachines(e) {
       writeLog("checkPointCheckMachines", "跳过", "Workcenter 表头缺少字段: " + built.missing.join(", "), trigger, "");
       return;
     }
-    const wcMap = built.included;  // Workcenter → { machineType, machineModel }
+    console.log("Workcenter 纳入集机台数: " + Object.keys(built.included).length);
 
-    console.log("Workcenter 纳入集行数(排除无需检查): " + Object.keys(wcMap).length);
-    if (built.badFlags.length > 0) console.warn("无需检查Y/N 异常取值: " + built.badFlags.join(", "));
-    if (built.duplicates.length > 0) console.warn("Workcenter 重复机台号: " + built.duplicates.join(", "));
+    // 3. 算计划
+    const plan = _pc_computeSyncPlan(injRows, built);
+    // 4. 过安全阀（只作用于删除）
+    const valve = _pc_shouldDelete(plan.toDelete.length, !isScheduled);
 
-    // 3. 计算差异
-    const wcSet = new Set(Object.keys(wcMap));
-    const type1 = [];  // 点检有/计划账无
-    const type2 = [];  // 计划账有/点检无
+    console.log("追加 " + plan.append.length + " 台 / 删除 " + plan.toDelete.length + " 台 / 仅报告 " + plan.plasmaKept.length + " 台");
+    if (!valve.ok) console.warn("安全阀: " + valve.reason);
 
-    const exemptType1Process = ["Plasma"];
-    injRows.forEach(function (r) {
-      if (r.machineNo && !wcSet.has(r.machineNo)) {
-        if (exemptType1Process.includes(String(r.rowData[2] || "").trim())) return; // 机型豁免
-        type1.push(r);
-      }
-    });
-
-    const exemptType2WC = ["V2FTA164", "V2FTA264", "V2FTA364"];
-    wcSet.forEach(function (wc) {
-      if (!injMachineNos.has(wc)) {
-        if (exemptType2WC.includes(wc)) return;                               // 指定机台豁免
-        // 豁免：Final Machine Type 为 6AX / DP / HS 的机台不纳入差异类型2
-        const exempt = ["6AX", "DP", "HS"];
-        if (exempt.includes(wcMap[wc].machineModel)) return;
-        type2.push({ workcenter: wc, info: wcMap[wc] });
-      }
-    });
-
-    // 排序
-    type1.sort(function (a, b) { return a.machineNo.localeCompare(b.machineNo); });
-    type2.sort(function (a, b) { return a.workcenter.localeCompare(b.workcenter); });
-
-    console.log("差异1(点检有/计划账无): " + type1.length + " 台");
-    console.log("差异2(计划账有/点检无): " + type2.length + " 台");
-
-    // 4. MachineList 标黄（差异类型1）
-    _pc_updateHighlights(wsML, dataML, injRows, type1);
-
-    // 5. 获取收件人
-    const recipients = _pc_getRecipients();
-
-    // 6. 发送邮件
-    if (recipients.length > 0) {
-      const today = formatVariableAsDate(new Date());
-      const subject = "【点检核对】 注塑机台差异报告 " + today;
-      const html = _pc_buildEmailHtml(type1, type2, today);
-
-      try {
-        _pc_sendMail(recipients.join(","), subject, html);
-        const summary = "差异1=" + type1.length + "台, 差异2=" + type2.length + "台, TO=" + recipients.length + "人";
-        writeLog("checkPointCheckMachines", "成功", summary, trigger, "TO: " + recipients.join(","));
-        console.log("邮件发送成功: " + summary);
-      } catch (err) {
-        writeLog("checkPointCheckMachines", "失败", err.message, trigger, "TO: " + recipients.join(","));
-        console.error("发送失败: " + err.message);
-      }
+    // 5-8. 写入与标黄
+    // 待补全必须取**写入后**的状态：当天新追加的行机型/点检人为空，
+    // 若沿用写入前的 injRows，这些行要到次日才进「待补全」区块，
+    // 而那正是"安静的欠账"——这个机制存在的全部意义就是让它们当天可见
+    let deleted = [];
+    let incomplete = [];
+    if (dryRun) {
+      incomplete = _pc_collectIncomplete(injRows).concat(plan.append.map(function (a) {
+        return { machineNo: a.machineNo, rowData: [_pc_FILTER_PROCESS, a.workshop, "", a.machineNo, ""] };
+      }));
     } else {
+      const exec = _pc_executePlan(wsML, dataML, plan, valve, injRows);
+      deleted = exec.deleted;
+      incomplete = exec.incomplete;
+    }
+
+    // 9. 邮件
+    const result = {
+      append: plan.append,
+      deleted: valve.ok ? plan.toDelete : [],
+      plasmaKept: plan.plasmaKept,
+      incomplete: incomplete,
+      deleteSkipped: !valve.ok,
+      valveReason: valve.reason,
+      badFlags: built.badFlags,
+      duplicates: built.duplicates,
+      dryRun: dryRun,
+    };
+
+    const recipients = _pc_getRecipients();
+    if (recipients.length === 0) {
       writeLog("checkPointCheckMachines", "跳过", "无匹配收件人(O=INJ,P=S&C)", trigger, "");
       console.warn("未找到匹配收件人");
+      return;
+    }
+
+    const today = formatVariableAsDate(new Date());
+    const subject = "【点检同步】 注塑机台差异报告 " + today;
+    const html = _pc_buildEmailHtml(result, today);
+
+    // 删除快照写进 Log，邮件会过期、快照是唯一的恢复依据
+    const snapshotJson = JSON.stringify(result.deleted.map(function (d) {
+      return { machineNo: d.machineNo, reason: d.reason, rows: d.snapshot };
+    }));
+
+    try {
+      _pc_sendMail(recipients.join(","), subject, html);
+      const summary = "追加=" + plan.append.length + "台, 删除=" + result.deleted.length + "台"
+        + (valve.ok ? "" : "(安全阀拦下)") + ", 待补全=" + incomplete.length + "行, TO=" + recipients.length + "人";
+      writeLog("checkPointCheckMachines", "成功", summary, trigger, snapshotJson);
+      console.log("邮件发送成功: " + summary);
+    } catch (err) {
+      writeLog("checkPointCheckMachines", "失败", err.message, trigger, snapshotJson);
+      console.error("发送失败: " + err.message);
     }
 
     console.log("点检机台核对执行完毕");
@@ -384,27 +416,77 @@ function checkPointCheckMachines(e) {
   }
 }
 
-// ========== MachineList 标黄 ==========
-/** 批量更新 MachineList 背景色：差异类型1 标黄，其余 INJ 行清除背景 */
-function _pc_updateHighlights(ws, dataML, injRows, type1) {
-  const lastRow = ws.getLastRow();
-  const bgData = ws.getRange(1, 1, lastRow, 5).getBackgrounds();  // A~E列
+/**
+ * 执行写入：删除 → 追加 → 重新读背景 → 标黄
+ * 安全不变量：工序 ≠ INJ 的行，值和背景色一律不写入
+ * @returns {{deleted: Array, incomplete: Array}} 实际删除的条目（安全阀拦下时为空）
+ *   与写入后仍待补全的行（含刚刚追加的，它们天然机型/点检人为空）
+ */
+function _pc_executePlan(wsML, dataML, plan, valve, injRows) {
+  const deleted = valve.ok ? plan.toDelete : [];
 
-  const type1IdxSet = new Set(type1.map(function (r) { return r.rowIndex - 1; })); // 0-indexed
+  // ---- 删除：按连续行号区间批量 deleteRows（只含 INJ 行）----
+  if (deleted.length > 0) {
+    const targets = [];
+    deleted.forEach(function (d) { d.rowIndexes.forEach(function (r) { targets.push(r); }); });
+    targets.sort(function (a, b) { return b - a; });   // 从大到小删，避免行号移位
 
-  // 遍历所有数据行，只修改 INJ 工序行的背景
-  for (let i = 1; i <= lastRow - 1 && i < dataML.length; i++) {
-    if (String(dataML[i][0] || "").trim() === _pc_FILTER_PROCESS) {
-      if (type1IdxSet.has(i)) {
-        bgData[i] = ["#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00"];
+    let runStart = targets[0];
+    let runCount = 1;
+    for (let i = 1; i <= targets.length; i++) {
+      if (i < targets.length && targets[i] === runStart - runCount) {
+        runCount++;
       } else {
-        bgData[i] = [null, null, null, null, null];
+        wsML.deleteRows(runStart - runCount + 1, runCount);
+        if (i < targets.length) { runStart = targets[i]; runCount = 1; }
       }
+    }
+    console.log("已删除 " + deleted.length + " 台机台，共 " + targets.length + " 行");
+  }
+
+  // ---- 追加：一律到表尾，不插任何现有行中间 ----
+  if (plan.append.length > 0) {
+    const lastRow = wsML.getLastRow();
+    const rows = plan.append.map(function (a) {
+      return [_pc_FILTER_PROCESS, a.workshop, "", a.machineNo, ""];
+    });
+    wsML.insertRowsAfter(lastRow, rows.length);
+    wsML.getRange(lastRow + 1, 1, rows.length, 5).setValues(rows);
+    console.log("已在表尾追加 " + rows.length + " 行");
+  }
+
+  // ---- 标黄：行号已因删除/追加而变，必须重新读背景 ----
+  const lastRow = wsML.getLastRow();
+  if (lastRow <= 1) return { deleted: deleted, incomplete: [] };
+
+  const bgData = wsML.getRange(1, 1, lastRow, 5).getBackgrounds();
+  const freshML = wsML.getRange(1, 1, lastRow, 5).getValues();
+
+  const injIdx = new Set();
+  const incompleteIdx = new Set();
+  const incompleteRows = [];
+  for (let i = 1; i < freshML.length; i++) {
+    if (String(freshML[i][0] || "").trim() !== _pc_FILTER_PROCESS) continue;
+    injIdx.add(i);
+    if (_pc_isIncomplete(freshML[i])) {
+      incompleteIdx.add(i);
+      incompleteRows.push({ machineNo: String(freshML[i][3] || "").trim(), rowData: freshML[i] });
     }
   }
 
-  ws.getRange(1, 1, lastRow, 5).setBackgrounds(bgData);
-  console.log("MachineList 标黄完成: " + type1.length + " 行");
+  _pc_computeColorActions(bgData, injIdx, incompleteIdx).forEach(function (a) {
+    wsML.getRange(a.start + 1, 1, a.count, 5)
+      .setBackgrounds(Array(a.count).fill(Array(5).fill(a.color)));
+  });
+  console.log("标黄完成：待补全 " + incompleteIdx.size + " 行");
+
+  return { deleted: deleted, incomplete: incompleteRows };
+}
+
+/** 收集当前 INJ 中的待补全行，供邮件列出 */
+function _pc_collectIncomplete(injRows) {
+  return injRows.filter(function (r) { return _pc_isIncomplete(r.rowData); })
+    .map(function (r) { return { machineNo: r.machineNo, rowData: r.rowData }; });
 }
 
 // ========== 收件人 ==========
@@ -445,52 +527,122 @@ function _pc_sendMail(to, subject, htmlBody) {
 }
 
 // ========== 邮件 HTML ==========
-function _pc_buildEmailHtml(type1, type2, today) {
-  var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
-  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto">';
+/**
+ * 构造同步报告邮件
+ * @param {Object} result 见 Task 6 Interfaces
+ * @param {string} today 已格式化的日期串
+ * @returns {string} HTML
+ */
+function _pc_buildEmailHtml(result, today) {
+  const statusOf = function (reason) {
+    if (result.dryRun) return _pc_ST_DEL_PLANNED;
+    return reason === "FLAG" ? _pc_ST_DEL_FLAG : _pc_ST_DEL_ABSENT;
+  };
 
-  // 红色标题栏
+  var html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
+  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:960px;margin:0 auto">';
+
   html += '<div style="background:#E60012;color:white;padding:16px 24px">';
-  html += '<h2 style="margin:0">注塑机台差异报告</h2>';
-  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px">比对范围：MachineList(工序=INJ) ↔ Workcenter(排除闲置)</p>';
+  html += '<h2 style="margin:0">注塑机台同步报告</h2>';
+  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px">比对范围：MachineList(工序=INJ) ↔ Workcenter(排除「无需检查Y/N」=Y)</p>';
+  html += '<p style="margin:4px 0 0;opacity:0.95;font-size:14px">';
+  html += '<a href="' + _pc_URL_POINTCHECK + '" style="color:#fff">点检机台主数据</a>';
+  html += ' &nbsp;|&nbsp; ';
+  html += '<a href="' + _pc_URL_PLAN + '" style="color:#fff">注塑计划机台</a>';
+  html += '</p>';
   html += '<p style="margin:4px 0 0;opacity:0.7;font-size:12px">发送时间：' + today + '</p>';
   html += '</div>';
 
+  if (result.dryRun) {
+    html += '<div style="background:#fff3cd;border-left:4px solid #e67e22;padding:12px 24px;color:#7a5b00">';
+    html += '<strong>预演模式：仅报告，未写入任何数据。</strong></div>';
+  }
+
   html += '<div style="padding:24px">';
 
-  // ===== 总览 =====
   html += '<table style="width:100%;border-collapse:collapse;margin-bottom:24px"><tr>';
-  html += _pc_card("差异类型1<br>点检有/计划账无", type1.length, "#e67e22");
-  html += _pc_card("差异类型2<br>计划账有/点检无", type2.length, "#e74c3c");
+  html += _pc_card(result.dryRun ? "计划追加" : "本次追加", result.append.length, "#27ae60");
+  html += _pc_card(result.dryRun ? "计划删除" : "本次删除", result.deleteSkipped ? 0 : result.deleted.length, "#e74c3c");
+  html += _pc_card("待补全", result.incomplete.length, "#e67e22");
   html += '</tr></table>';
 
-  // ===== 无差异 =====
-  if (type1.length === 0 && type2.length === 0) {
-    html += '<p style="color:#27ae60;font-weight:bold;font-size:16px">★ 点检机台与计划账机台完全一致，无差异。</p>';
+  const nothing = result.append.length === 0 && result.deleted.length === 0
+    && result.plasmaKept.length === 0 && result.incomplete.length === 0;
+
+  if (result.deleteSkipped) {
+    html += '<p style="color:#e74c3c;font-weight:bold">⚠ ' + result.valveReason + '</p>';
+  }
+  if (nothing && !result.deleteSkipped) {
+    html += '<p style="color:#27ae60;font-weight:bold;font-size:16px">★ 点检机台与计划账完全一致，无差异。</p>';
   }
 
-  // ===== 差异类型1 =====
-  if (type1.length > 0) {
-    html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px">差异类型1：点检有 / 计划账无 (' + type1.length + '台)</h3>';
-    html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">⚠ 请确认机台是否存在，更新点检机台主数据</p>';
-
-    var t1Headers = ["工序", "车间", "机型", "机台号", "点检人"];
-    var t1Rows = type1.map(function (r) {
-      return [r.rowData[0] || "-", r.rowData[1] || "-", r.rowData[2] || "-", r.rowData[3] || "-", r.rowData[4] || "-"];
-    });
-    html += buildHtmlTable(t1Headers, t1Rows, "#E60012");
+  // ===== 本次追加 =====
+  if (result.append.length > 0) {
+    html += _pc_section("本次追加：" + result.append.length + " 台");
+    html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">⚠ 新机台的「机型」「点检人」为空白，请人工补齐（补齐前该行在点检表中标黄）</p>';
+    html += buildHtmlTable(
+      ["机台号", "车间", "状态"],
+      result.append.map(function (r) {
+        return [r.machineNo, r.workshop || "(待补全)", result.dryRun ? _pc_ST_ADD_PLANNED : _pc_ST_ADDED];
+      }),
+      "#27ae60");
   }
 
-  // ===== 差异类型2 =====
-  if (type2.length > 0) {
-    html += '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:32px">差异类型2：计划账有 / 点检无 (' + type2.length + '台)</h3>';
-    html += '<p style="color:#e74c3c;font-weight:bold;margin-bottom:8px">⚠ 这些机台在计划账上，但在点检机台主数据中缺失，需要更新点检机台主数据</p>';
-
-    var t2Headers = ["Workcenter", "Machine Type", "Final Machine Type"];
-    var t2Rows = type2.map(function (r) {
-      return [r.workcenter, r.info.machineType || "-", r.info.machineModel || "-"];
+  // ===== 本次删除 =====
+  if (result.deleted.length > 0 || result.deleteSkipped) {
+    const n = result.deleteSkipped ? 0 : result.deleted.length;
+    const title = result.dryRun ? "计划删除：" + n + " 台（预演未写入）"
+      : "本次删除：" + n + " 台" + (result.deleteSkipped ? "（" + _pc_ST_DEL_SKIPPED + "）" : "");
+    html += _pc_section(title);
+    if (result.dryRun) {
+      html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">以下机台<b>尚未删除</b>。确认无误后手动运行 checkPointCheckMachines 执行</p>';
+    } else if (result.deleteSkipped) {
+      html += '<p style="color:#e74c3c;font-weight:bold;margin-bottom:8px">以下机台本次<b>未删除</b>，待人工确认后手动运行放行</p>';
+    } else {
+      html += '<p style="color:#e74c3c;font-weight:bold;margin-bottom:8px">已从点检表移除；如需恢复，请照下表整行字段补回</p>';
+    }
+    // 快照展开：一台机可能占多行，逐行输出便于恢复
+    const rows = [];
+    result.deleted.forEach(function (d) {
+      const st = statusOf(d.reason);
+      d.snapshot.forEach(function (s) {
+        rows.push([s[0] || "-", s[1] || "-", s[2] || "-", s[3] || "-", s[4] || "-", st]);
+      });
     });
-    html += buildHtmlTable(t2Headers, t2Rows, "#E60012");
+    html += buildHtmlTable(["工序", "车间", "机型", "机台号", "点检人", "状态"], rows, "#E60012");
+  }
+
+  // ===== 待补全 =====
+  if (result.incomplete.length > 0) {
+    html += _pc_section("待补全：" + result.incomplete.length + " 行");
+    html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">⚠ 「机型」或「点检人」为空，点检任务可能无法正常派发，请补齐</p>';
+    html += buildHtmlTable(
+      ["机台号", "车间", "状态"],
+      result.incomplete.map(function (r) { return [r.machineNo, (r.rowData[1] || "-"), _pc_ST_INCOMPLETE]; }),
+      "#e67e22");
+  }
+
+  // ===== 仅报告 =====
+  if (result.plasmaKept.length > 0) {
+    html += _pc_section("仅报告：" + result.plasmaKept.length + " 台");
+    html += '<p style="color:#7f8c8d;margin-bottom:8px">这些机台在表11 中查不到，但机型为 Plasma，按规则不删除</p>';
+    html += buildHtmlTable(
+      ["机台号", "状态"],
+      result.plasmaKept.map(function (r) { return [r.machineNo, _pc_ST_PLASMA]; }),
+      "#E60012");
+  }
+
+  // ===== 数据质量告警 =====
+  if (result.badFlags.length > 0 || result.duplicates.length > 0) {
+    html += _pc_section("数据质量告警");
+    if (result.badFlags.length > 0) {
+      html += '<p style="color:#e74c3c">「无需检查Y/N」出现异常取值（<b>不会被当作 Y 排除</b>）：'
+        + result.badFlags.join("、") + '。请改为 Y 或清空。</p>';
+    }
+    if (result.duplicates.length > 0) {
+      html += '<p style="color:#e74c3c">Workcenter 出现重复机台号（已取第一条）：'
+        + result.duplicates.join("、") + '</p>';
+    }
   }
 
   html += '<p style="color:#bdc3c7;font-size:11px;margin-top:32px">此邮件由 PointCheck Alert 系统自动发送</p>';
@@ -498,8 +650,12 @@ function _pc_buildEmailHtml(type1, type2, today) {
   return html;
 }
 
+function _pc_section(title) {
+  return '<h3 style="color:#E60012;border-left:4px solid #E60012;padding-left:8px;margin-top:32px">' + title + '</h3>';
+}
+
 function _pc_card(label, value, color) {
-  return '<td style="text-align:center;padding:16px;border:1px solid #ecf0f1;width:50%">' +
+  return '<td style="text-align:center;padding:16px;border:1px solid #ecf0f1;width:33%">' +
     '<div style="font-size:32px;font-weight:bold;color:' + color + '">' + value + '</div>' +
     '<div style="color:#7f8c8d;font-size:13px;margin-top:6px;line-height:1.5">' + label + '</div></td>';
 }

@@ -281,3 +281,81 @@ test('标黄：中间一行已处于目标态 → 不能把三段合并', () => 
     { start: 2, count: 1, color: '#FFFF00' },
   ], '第 1 行不需改色，应作为断点而非被合并进去');
 });
+
+test('邮件包含两张表的链接', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult(), '2026-09-30');
+
+  assert.match(html, /1RQql-PrcBWiAQNeg7hQKcocpllSUMRhT5XPrDTVWoBY\/edit#gid=436306312/, '点检表 MachineList 页签');
+  assert.match(html, /12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM\/edit#gid=0/, '表11 Workcenter 页签');
+});
+
+function emptyResult(over) {
+  return Object.assign({
+    append: [], deleted: [], plasmaKept: [], incomplete: [],
+    deleteSkipped: false, valveReason: '', badFlags: [], duplicates: [], dryRun: false,
+  }, over || {});
+}
+
+test('邮件状态列：已添加 / 已删除两种原因 / 待补全 / 仅报告 / 未执行', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult({
+    append: [{ machineNo: 'E0EN0001', workshop: 'TB1' }],
+    deleted: [
+      { machineNo: 'H2FTA001', reason: 'FLAG', snapshot: [mlRow('INJ', 'TB2', '6AX', 'H2FTA001', 'OPC')] },
+      { machineNo: 'H2FTA002', reason: 'ABSENT', snapshot: [mlRow('INJ', 'TB2', '3AX', 'H2FTA002', 'OPC')] },
+    ],
+    plasmaKept: [{ machineNo: 'P1PLZ001' }],
+    incomplete: [{ machineNo: 'E0EN0001', rowData: mlRow('INJ', 'TB1', '', 'E0EN0001', '') }],
+    deleteSkipped: true,
+    valveReason: '拟删除 11 台，超过阈值 10',
+  }), '2026-09-30');
+
+  assert.match(html, /已添加·需人工维护/);
+  assert.match(html, /已删除·因表11标Y/);
+  assert.match(html, /已删除·表11查不到/);
+  assert.match(html, /待补全/);
+  assert.match(html, /仅报告·Plasma豁免/);
+  assert.match(html, /未执行·超阈值/);
+});
+
+test('删除快照含整行字段（可据此恢复）', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult({
+    deleted: [{ machineNo: 'H2FTA001', reason: 'FLAG', snapshot: [mlRow('INJ', 'TB2', '6AX', 'H2FTA001', 'OPC')] }],
+  }), '2026-09-30');
+
+  assert.match(html, /6AX/, '机型字段');
+  assert.match(html, /OPC/, '点检人字段');
+});
+
+test('安全阀未触发时不出「未执行」字样', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult(), '2026-09-30');
+
+  assert.doesNotMatch(html, /未执行/, '没拦下就不能出现未执行，否则是谎报');
+});
+
+test('数据质量告警：badFlags 非空才出该区块', () => {
+  const withBad = globalThis._pc_buildEmailHtml(emptyResult({ badFlags: ['y', '是'] }), '2026-09-30');
+  assert.match(withBad, /是/);
+  assert.match(withBad, /数据质量|标了却|异常取值/);
+
+  const noBad = globalThis._pc_buildEmailHtml(emptyResult(), '2026-09-30');
+  assert.doesNotMatch(noBad, /异常取值/);
+});
+
+test('预演模式：状态列不说谎，追加/删除都标「预演未写入」', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult({
+    dryRun: true,
+    append: [{ machineNo: 'E0EN0001', workshop: 'TB1' }],
+    deleted: [{ machineNo: 'H2FTA001', reason: 'FLAG', snapshot: [mlRow('INJ', 'TB2', '6AX', 'H2FTA001', 'OPC')] }],
+  }), '2026-09-30');
+
+  assert.match(html, /仅报告/);
+  assert.match(html, /计划追加·预演未写入/);
+  assert.match(html, /计划删除·预演未写入/);
+  assert.doesNotMatch(html, /已删除/, '预演什么都没删，说「已删除」就是谎报');
+  assert.doesNotMatch(html, /已添加/, '预演什么都没写，说「已添加」就是谎报');
+});
+
+test('两侧一致且无待补全 → 报告无差异', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult(), '2026-09-30');
+  assert.match(html, /无差异|完全一致/);
+});
