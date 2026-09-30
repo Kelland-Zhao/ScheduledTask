@@ -24,6 +24,7 @@ const _pc_EXEMPT_PLASMA = "Plasma";       // 点检侧独有、表11 完全没�
 // 安全阀：单次删除超过这个机台数就只报告不删。稳态日差异应为 0-3 台，
 // 超阈值几乎必定是上游异常（表头错位、人工误标）而非真有批量变动
 const _pc_DELETE_LIMIT = 10;
+const _pc_HIGHLIGHT = "#FFFF00";          // 待补全行的标黄颜色
 
 const _pc_ID_PERMISSION = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
 const _pc_SHEET_USERID = "userID";
@@ -193,6 +194,52 @@ function _pc_shouldDelete(deleteCount, isManual) {
     };
   }
   return { ok: true, reason: "" };
+}
+
+/**
+ * 待补全判定：机型(C列,index2) 或 点检人(E列,index4) 为空
+ * 追加行天然为空 → 必然待补全，靠标黄+邮件暴露直到人工补齐
+ * @param {Array} rowData
+ * @returns {boolean}
+ */
+function _pc_isIncomplete(rowData) {
+  const model = String(rowData[2] || "").trim();
+  const checker = String(rowData[4] || "").trim();
+  return model === "" || checker === "";
+}
+
+/**
+ * 算出需要改色的区间（纯函数）。只输出「目标色 ≠ 当前色」的连续区间，
+ * 颜色没变的行一概不产生动作 —— 非 INJ 行永远不需要改色，因此永远不会被写入
+ * @param {Array<Array>} bgData 全表背景色（0-based，含表头行）
+ * @param {Set<number>} injRowIdx 需管理的 INJ 行下标（0-based）
+ * @param {Set<number>} incompleteIdx 待补全行下标（0-based）
+ * @returns {Array<{start: number, count: number, color: string|null}>} start 为 0-based
+ */
+function _pc_computeColorActions(bgData, injRowIdx, incompleteIdx) {
+  const actions = [];
+  let cur = null;
+
+  for (let i = 0; i < bgData.length; i++) {
+    const target = (injRowIdx.has(i) && incompleteIdx.has(i)) ? _pc_HIGHLIGHT : null;
+    const isManaged = injRowIdx.has(i);
+    const current = isManaged ? (String((bgData[i] || [])[0] || "").trim() || null) : null;
+
+    // 非 INJ 行不管理、不产生动作
+    if (!isManaged || target === current) {
+      if (cur) { actions.push(cur); cur = null; }
+      continue;
+    }
+
+    if (cur && cur.color === target) {
+      cur.count++;
+    } else {
+      if (cur) actions.push(cur);
+      cur = { start: i, count: 1, color: target };
+    }
+  }
+  if (cur) actions.push(cur);
+  return actions;
 }
 
 // ========== 主入口 ==========

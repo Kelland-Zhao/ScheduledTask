@@ -168,3 +168,61 @@ test('安全阀计数单位是机台数不是行数', () => {
   );
   assert.equal(globalThis._pc_shouldDelete(plan.toDelete.length, false).ok, true);
 });
+
+test('待补全判定：机型或点检人为空', () => {
+  assert.equal(globalThis._pc_isIncomplete(mlRow('INJ', 'TB2', '6AX', 'H2HTA520', 'OPC')), false);
+  assert.equal(globalThis._pc_isIncomplete(mlRow('INJ', 'TB2', '', 'H2HTA520', 'OPC')), true, '机型空');
+  assert.equal(globalThis._pc_isIncomplete(mlRow('INJ', 'TB2', '6AX', 'H2HTA520', '')), true, '点检人空');
+  assert.equal(globalThis._pc_isIncomplete(mlRow('INJ', 'TB2', '  ', 'H2HTA520', '   ')), true, '仅空格也算空');
+});
+
+test('标黄：只输出目标色与当前色不同的区间', () => {
+  // 4 行数据（0-based）：0=无需标黄且已无色，1=需标黄且无色，
+  // 2=需标黄且已是黄色（不变，不该写），3=原为黄但已不需（要清除）
+  const bg = [
+    ['', '', '', '', ''],
+    [null, null, null, null, null],
+    ['#FFFF00', '#FFFF00', '#FFFF00', '#FFFF00', '#FFFF00'],
+    ['#FFFF00', '#FFFF00', '#FFFF00', '#FFFF00', '#FFFF00'],
+  ];
+  const injIdx = new Set([0, 1, 2, 3]);
+  const incomplete = new Set([1, 2]);
+
+  const actions = globalThis._pc_computeColorActions(bg, injIdx, incomplete);
+
+  assert.deepEqual(actions, [
+    { start: 1, count: 1, color: '#FFFF00' },   // 0 不变、2 不变 → 不写
+    { start: 3, count: 1, color: null },        // 3 要清除
+  ]);
+});
+
+test('标黄：非 INJ 行即使颜色不同也不产生任何动作', () => {
+  const bg = [
+    ['#FFFF00', '#FFFF00', '#FFFF00', '#FFFF00', '#FFFF00'],  // 第0行是 PK，非 INJ
+    ['', '', '', '', ''],
+  ];
+  const injIdx = new Set([1]);
+  const incomplete = new Set([1]);
+
+  const actions = globalThis._pc_computeColorActions(bg, injIdx, incomplete);
+
+  assert.deepEqual(actions, [{ start: 1, count: 1, color: '#FFFF00' }], '第0行不得出现');
+});
+
+test('null 背景色视为无色，需要时能正常标黄', () => {
+  const bg = [[null, null, null, null, null]];
+  const actions = globalThis._pc_computeColorActions(bg, new Set([0]), new Set([0]));
+
+  assert.deepEqual(actions, [{ start: 0, count: 1, color: '#FFFF00' }]);
+});
+
+test('标黄：连续行合并成一个区间', () => {
+  const bg = [
+    ['', '', '', '', ''],
+    ['', '', '', '', ''],
+    ['', '', '', '', ''],
+  ];
+  const actions = globalThis._pc_computeColorActions(bg, new Set([0, 1, 2]), new Set([0, 1, 2]));
+
+  assert.deepEqual(actions, [{ start: 0, count: 3, color: '#FFFF00' }], '一次 setBackgrounds 覆盖 3 行');
+});
