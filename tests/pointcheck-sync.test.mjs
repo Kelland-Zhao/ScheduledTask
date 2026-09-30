@@ -141,3 +141,30 @@ test('防御：INJ 行非空但机台号列全读空 → 同样不追加任何�
 
   assert.deepEqual(plan, { append: [], toDelete: [], plasmaKept: [] });
 });
+
+test('安全阀：拟删 10 台 → 执行；11 台 → 拦下', () => {
+  assert.equal(globalThis._pc_shouldDelete(10, false).ok, true);
+  assert.equal(globalThis._pc_shouldDelete(0, false).ok, true);
+
+  const blocked = globalThis._pc_shouldDelete(11, false);
+  assert.equal(blocked.ok, false);
+  assert.match(blocked.reason, /11/, '原因里要带上实际台数，方便人判断');
+});
+
+test('安全阀：手动运行绕过（人工放行）', () => {
+  assert.equal(globalThis._pc_shouldDelete(50, true).ok, true);
+});
+
+test('安全阀计数单位是机台数不是行数', () => {
+  // H2FCS506 占 2 行，加上 H2HTA520、V1FTA958 → 3 台机共 4 行
+  const plan = globalThis._pc_computeSyncPlan(
+    INJ_ROWS_FIXTURE,
+    builtWith({}, {})
+  );
+  assert.equal(plan.toDelete.length, 3, '3 台机（不是 4 行）');
+  assert.equal(
+    plan.toDelete.reduce((n, d) => n + d.rowIndexes.length, 0), 4,
+    '对应 4 行 —— 阀按机台数算，3 < 10 放行'
+  );
+  assert.equal(globalThis._pc_shouldDelete(plan.toDelete.length, false).ok, true);
+});

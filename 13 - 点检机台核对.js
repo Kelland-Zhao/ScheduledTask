@@ -21,6 +21,10 @@ const _pc_HEADER_FLAG = "无需检查Y/N";
 const _pc_FLAG_YES = "Y";
 const _pc_EXEMPT_PLASMA = "Plasma";       // 点检侧独有、表11 完全没有的机型，不纳入删除
 
+// 安全阀：单次删除超过这个机台数就只报告不删。稳态日差异应为 0-3 台，
+// 超阈值几乎必定是上游异常（表头错位、人工误标）而非真有批量变动
+const _pc_DELETE_LIMIT = 10;
+
 const _pc_ID_PERMISSION = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
 const _pc_SHEET_USERID = "userID";
 const _pc_PERM_PROCESS_COL = 14;          // O列(0-indexed): 工序
@@ -172,6 +176,23 @@ function _pc_computeSyncPlan(injRows, built) {
   });
 
   return { append: append, toDelete: toDelete, plasmaKept: plasmaKept };
+}
+
+/**
+ * 安全阀：是否执行删除。追加不设阀（可逆），只拦删除（不可逆）
+ * @param {number} deleteCount 拟删除的**机台数**（不是行数）
+ * @param {boolean} isManual 手动运行 = 人工放行，绕过阀
+ * @returns {{ok: boolean, reason: string}}
+ */
+function _pc_shouldDelete(deleteCount, isManual) {
+  if (isManual) return { ok: true, reason: "" };
+  if (deleteCount > _pc_DELETE_LIMIT) {
+    return {
+      ok: false,
+      reason: "拟删除 " + deleteCount + " 台，超过阈值 " + _pc_DELETE_LIMIT + "，本次仅报告未执行删除",
+    };
+  }
+  return { ok: true, reason: "" };
 }
 
 // ========== 主入口 ==========
