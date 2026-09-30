@@ -1,15 +1,35 @@
-// V20260604.03 — Workcenter 数据同步（从 Line Database → Workcenter，Equipment_Number_EAM 字典匹配）
+// V20260930.02 — Workcenter 数据同步（Line Database → Workcenter，按 Workcenter 键的行级同步）
 // 入口：syncWorkcenterData（每日 08:20 定时 or 手动）
-// 逻辑：读取 Line Database，过滤有效 Individual Machine，通过 Equipment_Number_EAM 的 K列匹配设备编号，
-//       智能转换 Final Machine Type，判断主设备标识，全量写入 Workcenter 的 A-F 列 + K列（New Formed Cell）
+// 逻辑：以 Workcenter 为键就地更新 A–L 共 12 个程序列，M–S 共 7 个人工列一律不碰
+//   · A/B/C/D/J/L ← 1. Line Database 机台 + Equipment_Number_EAM 设备编号
+//   · E–I ← 2. Active Cell 的 M–Q，键为 D 列 New Formed Cell
+//   · K 是否主设备 ← 机台号出现在 2. Active Cell 的 D 列即为 Y，否则 N
+// 列定位一律按表头名解析，不硬编码列号
 
 // ========== 数据源配置 ==========
 const _ws_ID_PLAN = "11zyH65MhC-LuqsEXT6KeO3-GQ3jwW7z7kJjHD0TwLZc";
 const _ws_SHEET_PLAN = "1. Line Database";
+const _ws_SHEET_ACTIVE_CELL = "2. Active Cell";
 
 const _ws_ID_EQU = "12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM";
 const _ws_SHEET_EQU = "Workcenter";
 const _ws_SHEET_EQUIPMENT_NUMBER = "Equipment_Number_EAM";
+
+// 本脚本管理的 12 个程序列（按表头名定位）
+const _WS_MANAGED_HEADERS = [
+  "Workcenter", "Machine Type", "机器性能", "New Formed Cell",
+  "HIM/Auto", "VIM-1", "VIM-2", "VIM-3", "VIM-4",
+  "Final Machine Type", "是否主设备", "设备编号",
+];
+
+// 机组配置的 5 列：来源 2. Active Cell 的 M–Q，键为 New Formed Cell
+const _WS_CELL_HEADERS = ["HIM/Auto", "VIM-1", "VIM-2", "VIM-3", "VIM-4"];
+
+// 表头行最多往下找几行（2. Active Cell 表头占两行）
+const _WS_HEADER_SCAN_ROWS = 5;
+
+// 安全阀：源表机台数低于表内现有行数这个比例时中止，防止源表异常读空后把整表删光
+const _WS_MIN_SOURCE_RATIO = 0.5;
 
 // ========== 主入口 ==========
 function syncWorkcenterData(e) {
@@ -17,91 +37,55 @@ function syncWorkcenterData(e) {
   try {
     console.log("开始执行 Workcenter 数据同步...");
 
-    // 1. 读取 Line Database 数据
-    console.log("正在读取 Line Database 数据...");
-    const ssPlan = SpreadsheetApp.openById(_ws_ID_PLAN);
-    const wsPlan = ssPlan.getSheetByName(_ws_SHEET_PLAN);
-    const dataPlan = wsPlan.getDataRange().getValues();
+    // 1. 读源机台
+    const sourceMachines = _ws_readSourceMachines();
+    console.log("成功读取 " + sourceMachines.length + " 台机台");
 
-    if (dataPlan.length <= 1) {
-      try { writeLog("syncWorkcenterData", "跳过", "Line Database 表格为空或只有表头", trigger, ""); } catch (e2) {}
+    // 2. 读目标表
+    const targetWs = SpreadsheetApp.openById(_ws_ID_EQU).getSheetByName(_ws_SHEET_EQU);
+    if (!targetWs) throw new Error("找不到工作表: " + _ws_SHEET_EQU);
+    const targetData = targetWs.getDataRange().getValues();
+    const targetCols = _ws_requireHeaders(targetData[0], _WS_MANAGED_HEADERS, _ws_SHEET_EQU);
+
+    // 2.5 安全阀：源表异常时中止，宁可不同步也不能把整表删光
+    const guard = _ws_checkSourceGuard(sourceMachines.length, targetData.length - 1);
+    if (!guard.ok) {
+      console.log("⛔ " + guard.reason);
+      try { writeLog("syncWorkcenterData", "跳过", guard.reason, trigger, ""); } catch (e2) {}
       return;
     }
 
-    const objArray = _ws_getObjArray(dataPlan);
-    console.log("成功读取 " + objArray.length + " 行数据");
+    // 3. 建设备编号字典（机台号 → 设备编号）
+    const eamMap = _ws_readEquipmentMap();
+    console.log("设备编号字典: " + Object.keys(eamMap).length + " 条");
 
-    // 2. 读取 Equipment_Number_EAM，构建 K列→A列 映射
-    console.log("正在读取 Equipment_Number_EAM 工作表数据...");
-    const ssEQU = SpreadsheetApp.openById(_ws_ID_EQU);
-    const wsEquipmentNumber = ssEQU.getSheetByName(_ws_SHEET_EQUIPMENT_NUMBER);
-    const dataEquipmentNumber = wsEquipmentNumber.getDataRange().getValues();
+    // 4. 读机组配置（New Formed Cell → HIM/Auto + VIM-1~4）
+    const cellSync = _ws_readActiveCellMap();
+    console.log("机组配置: " + Object.keys(cellSync.map).length + " 条" + (cellSync.available ? "" : "（本次跳过 E–I 同步）"));
 
-    const equipmentNumberMap = {};
-    if (dataEquipmentNumber.length > 1) {
-      for (let i = 1; i < dataEquipmentNumber.length; i++) {
-        const kColumnValue = dataEquipmentNumber[i][10]; // K列（索引10）
-        const aColumnValue = dataEquipmentNumber[i][0];  // A列（索引0）
-
-        if (kColumnValue && kColumnValue.toString().trim() !== "") {
-          equipmentNumberMap[kColumnValue.toString().trim()] = aColumnValue || "";
-        }
-      }
-      console.log("成功构建设备编号映射，共 " + Object.keys(equipmentNumberMap).length + " 条记录");
-    } else {
-      console.log("警告: Equipment_Number_EAM 表格为空或只有表头");
-    }
-
-    // 3. 过滤有效的 Individual Machine 记录
-    const objArrayNoNull = objArray.filter(function (r) {
-      return r["Individual Machine"] != "";
-    });
-    console.log("过滤后有效记录: " + objArrayNoNull.length + " 行");
-
-    // 4. 构建 A-F 同步数据 + K列 New Formed Cell
-    const syncData = [];       // A-F 六列
-    const newFormedCellCol = []; // K列
-
-    objArrayNoNull.forEach(function (item) {
-      // D列 Final Machine Type：机器性能不为空则用机器性能，否则用 Machine Type
-      let finalMachineType = "";
-      if (item["机器性能"] && item["机器性能"].toString().trim() !== "") {
-        finalMachineType = item["机器性能"];
-      } else {
-        finalMachineType = item["Machine Type"];
-      }
-
-      // 智能转换 Final Machine Type
-      finalMachineType = _ws_convertFinalMachineType(finalMachineType);
-
-      // E列 主设备标识
-      const isMainEquipment = _ws_isMainEquipmentType(finalMachineType, item["Machine Type"]);
-
-      // F列 设备编号：基于 A列 Individual Machine 在 Equipment_Number_EAM 的 K列匹配，取对应 A列值
-      const workcenterValue = item["Individual Machine"] ? item["Individual Machine"].toString().trim() : "";
-      let equipmentNumber = "";
-      if (workcenterValue && equipmentNumberMap[workcenterValue]) {
-        equipmentNumber = equipmentNumberMap[workcenterValue];
-      }
-
-      syncData.push([item["Individual Machine"], item["Machine Type"], item["机器性能"], finalMachineType, isMainEquipment, equipmentNumber]);
-
-      // K列 New Formed Cell：机组号，来自 Line Database E列
-      newFormedCellCol.push([item["New Formed Cell"] || ""]);
+    // 5. 计算新的表内容
+    const plan = _ws_planSync({
+      targetData: targetData,
+      targetCols: targetCols,
+      sourceMachines: sourceMachines,
+      eamMap: eamMap,
+      cellMap: cellSync.map,
+      cellsAvailable: cellSync.available,
     });
 
-    // 5. 执行数据同步
-    console.log("开始同步数据到 Workcenter 表格...");
-    const resultDataWritten = _ws_dataWritten(_ws_ID_EQU, _ws_SHEET_EQU, syncData, newFormedCellCol);
+    // 6. 写回
+    _ws_writeBack(targetWs, targetData[0].length, plan.matrix, targetData.length - 1);
 
-    if (resultDataWritten === true) {
-      console.log("✅ 数据同步成功完成！共同步 " + syncData.length + " 条记录");
-      try { writeLog("syncWorkcenterData", "成功", "同步 " + syncData.length + " 条记录到 Workcenter", trigger, ""); } catch (e2) {}
-    } else {
-      console.log("❌ 数据同步失败: " + resultDataWritten);
-      try { writeLog("syncWorkcenterData", "失败", String(resultDataWritten), trigger, ""); } catch (e2) {}
+    const summary = "更新 " + plan.report.updated.length +
+      " / 新增 " + plan.report.added.length +
+      " / 删除 " + plan.report.deleted.length +
+      " / E–I 同步 " + plan.report.cellSynced +
+      " / E–I 清空 " + plan.report.cellCleared.length;
+    console.log("同步完成：" + summary);
+    if (plan.report.deleted.length > 0) {
+      console.log("已删除的机台: " + plan.report.deleted.join(", "));
     }
-
+    try { writeLog("syncWorkcenterData", "成功", summary, trigger, ""); } catch (e2) {}
   } catch (err) {
     console.log("❌ 主函数执行错误: " + err.toString());
     console.log("错误堆栈: " + (err.stack || ""));
@@ -110,100 +94,244 @@ function syncWorkcenterData(e) {
 }
 
 // ========== 数据读取 ==========
-function _ws_getObjArray(data) {
-  const headers = data[0];
-  const rows = [];
+function _ws_readSourceMachines() {
+  const ws = SpreadsheetApp.openById(_ws_ID_PLAN).getSheetByName(_ws_SHEET_PLAN);
+  if (!ws) throw new Error("找不到工作表: " + _ws_SHEET_PLAN);
 
+  const data = ws.getDataRange().getValues();
+  const cols = _ws_requireHeaders(data[0], ["Individual Machine", "Machine Type", "机器性能", "New Formed Cell"], _ws_SHEET_PLAN);
+
+  const machines = [];
   for (let i = 1; i < data.length; i++) {
-    const rowData = data[i];
-    const rowObject = {};
+    const workcenter = String(data[i][cols["Individual Machine"]] || "").trim();
+    if (!workcenter) continue;
 
-    for (let j = 0; j < headers.length; j++) {
-      rowObject[headers[j]] = rowData[j];
-    }
+    const item = {
+      "Individual Machine": data[i][cols["Individual Machine"]],
+      "Machine Type": data[i][cols["Machine Type"]],
+      "机器性能": data[i][cols["机器性能"]],
+      "New Formed Cell": data[i][cols["New Formed Cell"]],
+    };
 
-    rows.push(rowObject);
-  }
-
-  return rows;
-}
-
-// ========== 写入 Workcenter ==========
-function _ws_clearSheetContent(ss, sheetName, rowCount) {
-  try {
-    console.log("正在清空 " + sheetName + " 表格 A-F 列及 K列内容...");
-    const ws = ss.getSheetByName(sheetName);
-    const lastRow = ws.getLastRow();
-
-    if (lastRow > 1) {
-      // 清空 A-F 列
-      ws.getRange(2, 1, lastRow - 1, 6).clearContent();
-      // 清空 K列
-      ws.getRange(2, 11, lastRow - 1, 1).clearContent();
-      console.log("✅ 成功清空 A-F 列及 K列 " + (lastRow - 1) + " 行数据");
+    // D列 Final Machine Type：机器性能不为空则用机器性能，否则用 Machine Type
+    let finalMachineType = "";
+    if (item["机器性能"] && item["机器性能"].toString().trim() !== "") {
+      finalMachineType = item["机器性能"];
     } else {
-      console.log("表格只有表头，无需清空");
+      finalMachineType = item["Machine Type"];
     }
-    return true;
-  } catch (e) {
-    console.log("❌ 清空表格内容失败: " + e.toString());
-    throw e;
+    finalMachineType = _ws_convertFinalMachineType(finalMachineType);
+
+    machines.push({
+      workcenter: workcenter,
+      machineType: item["Machine Type"],
+      performance: item["机器性能"] === undefined ? "" : item["机器性能"],
+      newFormedCell: String(item["New Formed Cell"] || "").trim(),
+      finalMachineType: finalMachineType,
+    });
   }
+  return machines;
 }
 
-function _ws_dataWritten(id, sheetName, syncData, newFormedCellCol) {
-  try {
-    console.log("正在打开目标表格: " + sheetName);
-    const ss = SpreadsheetApp.openById(id);
-    const ws = ss.getSheetByName(sheetName);
-
-    // 1. 清空表格内容（保留表头）
-    const clearResult = _ws_clearSheetContent(ss, sheetName, syncData.length);
-    if (!clearResult) {
-      return "清空表格失败";
-    }
-
-    // 2. 校验数据
-    const validationResult = _ws_validateData(syncData);
-    if (validationResult !== true) {
-      return validationResult;
-    }
-
-    // 3. 写入 A-F 列
-    console.log("正在写入 " + syncData.length + " 行数据到 A-F 列...");
-    if (syncData.length > 0) {
-      ws.getRange(2, 1, syncData.length, 6).setValues(syncData);
-      console.log("✅ A-F 列数据写入成功");
-    }
-
-    // 4. 写入 K列 New Formed Cell
-    if (newFormedCellCol.length > 0) {
-      ws.getRange(2, 11, newFormedCellCol.length, 1).setValues(newFormedCellCol);
-      console.log("✅ K列 New Formed Cell 写入成功");
-    }
-
-    console.log("✅ 数据写入完成");
-    return true;
-
-  } catch (e) {
-    console.log("❌ 数据写入失败: " + e.toString());
-    return e.toString();
+// 设备编号字典：Equipment_Number_EAM 的「机台号 - Tag」→「设备」，按机台号匹配
+function _ws_readEquipmentMap() {
+  const map = {};
+  const ws = SpreadsheetApp.openById(_ws_ID_EQU).getSheetByName(_ws_SHEET_EQUIPMENT_NUMBER);
+  if (!ws) {
+    console.log("⚠️ 找不到工作表: " + _ws_SHEET_EQUIPMENT_NUMBER + "，设备编号将留空");
+    return map;
   }
+
+  const data = ws.getDataRange().getValues();
+  if (data.length < 2) return map;
+
+  const cols = _ws_requireHeaders(data[0], ["设备", "机台号 - Tag"], _ws_SHEET_EQUIPMENT_NUMBER);
+  for (let i = 1; i < data.length; i++) {
+    const tag = _ws_cellText(data[i][cols["机台号 - Tag"]]);
+    if (!tag || map[tag] !== undefined) continue; // 同一机台多条设备记录时取第一条
+    const equipment = _ws_cellText(data[i][cols["设备"]]);
+    if (equipment) map[tag] = equipment;
+  }
+  return map;
 }
 
-// ========== 数据验证 ==========
-function _ws_validateData(data) {
-  if (!Array.isArray(data) || data.length === 0) {
-    return "数据格式无效或为空";
+// 机组配置字典：2. Active Cell 的 New Formed Cell → [HIM/Auto, VIM-1~4]
+// 表头占两行（第 1 行分组、第 2 行字段名），所以扫描定位而不是写死行号
+function _ws_readActiveCellMap() {
+  const ws = SpreadsheetApp.openById(_ws_ID_PLAN).getSheetByName(_ws_SHEET_ACTIVE_CELL);
+  if (!ws) {
+    console.log("⚠️ 找不到工作表: " + _ws_SHEET_ACTIVE_CELL + "，本次跳过 E–I 同步");
+    return { available: false, map: {} };
   }
 
-  for (let i = 0; i < data.length; i++) {
-    if (!Array.isArray(data[i]) || data[i].length !== 6) {
-      return "第 " + (i + 1) + " 行数据格式不正确，期望6个字段，实际" + data[i].length + "个字段";
+  const data = ws.getDataRange().getValues();
+  const required = ["New Formed Cell"].concat(_WS_CELL_HEADERS);
+  const headerRow = _ws_findHeaderRow(data, required);
+  if (headerRow < 0) {
+    console.log("⚠️ " + _ws_SHEET_ACTIVE_CELL + " 找不到表头（需含 " + required.join(" / ") + "），本次跳过 E–I 同步");
+    return { available: false, map: {} };
+  }
+  const cols = _ws_headerIndex(data[headerRow]);
+
+  const map = {};
+  const duplicates = [];
+  for (let i = headerRow + 1; i < data.length; i++) {
+    const key = _ws_cellText(data[i][cols["New Formed Cell"]]);
+    if (!key) continue;
+    if (map[key] !== undefined) { // 重复键取第一条
+      duplicates.push(key);
+      continue;
+    }
+    map[key] = _WS_CELL_HEADERS.map(function (h) {
+      const v = data[i][cols[h]];
+      return v === undefined || v === null ? "" : v;
+    });
+  }
+
+  const available = Object.keys(map).length > 0;
+  if (!available) console.log("⚠️ " + _ws_SHEET_ACTIVE_CELL + " 无有效数据，本次跳过 E–I 同步");
+  if (duplicates.length > 0) {
+    console.log("⚠️ " + _ws_SHEET_ACTIVE_CELL + " 中 New Formed Cell 重复 " + duplicates.length +
+      " 处，已取第一条: " + duplicates.slice(0, 5).join(", "));
+  }
+  return { available: available, map: map };
+}
+
+// 源表数量安全阀
+function _ws_checkSourceGuard(sourceCount, existingCount) {
+  if (sourceCount === 0) {
+    return { ok: false, reason: "源表 " + _ws_SHEET_PLAN + " 读不到任何机台，已中止（未改动 Workcenter）" };
+  }
+  if (existingCount > 0 && sourceCount < existingCount * _WS_MIN_SOURCE_RATIO) {
+    return {
+      ok: false,
+      reason: "源表机台数 " + sourceCount + " 不足表内现有 " + existingCount + " 台的一半，已中止（未改动 Workcenter）",
+    };
+  }
+  return { ok: true, reason: "" };
+}
+
+// ========== 表头解析 ==========
+function _ws_headerIndex(headerRow) {
+  const idx = {};
+  for (let i = 0; i < headerRow.length; i++) {
+    const name = String(headerRow[i] || "").trim();
+    if (name && idx[name] === undefined) idx[name] = i; // 重名取第一列
+  }
+  return idx;
+}
+
+function _ws_findHeaderRow(data, requiredNames) {
+  const limit = Math.min(_WS_HEADER_SCAN_ROWS, data.length);
+  for (let r = 0; r < limit; r++) {
+    const idx = _ws_headerIndex(data[r]);
+    if (requiredNames.every(function (n) { return idx[n] !== undefined; })) return r;
+  }
+  return -1;
+}
+
+function _ws_requireHeaders(headerRow, names, sheetLabel) {
+  const idx = _ws_headerIndex(headerRow);
+  const missing = names.filter(function (n) { return idx[n] === undefined; });
+  if (missing.length > 0) {
+    throw new Error(sheetLabel + " 表头缺少字段: " + missing.join(", ") + "（未改动任何数据）");
+  }
+  return idx;
+}
+
+// ========== 同步计算（纯函数，不碰表格） ==========
+function _ws_planSync(opts) {
+  const targetData = opts.targetData;
+  const cols = opts.targetCols;
+  const width = targetData[0].length;
+  const rows = targetData.slice(1);
+
+  const byMachine = new Map();
+  opts.sourceMachines.forEach(function (m) {
+    if (!byMachine.has(m.workcenter)) byMachine.set(m.workcenter, m); // 重复机台号取第一条
+  });
+
+  const report = { updated: [], added: [], deleted: [], cellSynced: 0, cellCleared: [] };
+  const ctx = {
+    cols: cols,
+    eamMap: opts.eamMap || {},
+    cellMap: opts.cellMap || {},
+    cellsAvailable: opts.cellsAvailable === true,
+    report: report,
+  };
+  const matrix = [];
+
+  // 表里已有：源里还在就地更新，源里没了整行丢弃（即删除）
+  rows.forEach(function (row) {
+    const key = _ws_cellText(row[cols["Workcenter"]]);
+    if (!key) return;
+    const machine = byMachine.get(key);
+    if (!machine) {
+      report.deleted.push(key);
+      return;
+    }
+    matrix.push(_ws_buildRow(row, width, machine, ctx));
+    report.updated.push(key);
+  });
+
+  // 源里有、表里没有：追加到末尾，人工列留空
+  const handled = new Set(report.updated);
+  opts.sourceMachines.forEach(function (m) {
+    if (handled.has(m.workcenter)) return;
+    handled.add(m.workcenter);
+    matrix.push(_ws_buildRow(new Array(width).fill(""), width, m, ctx));
+    report.added.push(m.workcenter);
+  });
+
+  return { matrix: matrix, report: report };
+}
+
+function _ws_buildRow(row, width, machine, ctx) {
+  const cols = ctx.cols;
+  const out = [];
+  for (let i = 0; i < width; i++) out.push(row[i] === undefined ? "" : row[i]);
+
+  out[cols["Workcenter"]] = machine.workcenter;
+  out[cols["Machine Type"]] = machine.machineType;
+  out[cols["机器性能"]] = machine.performance;
+  out[cols["New Formed Cell"]] = machine.newFormedCell;
+  out[cols["Final Machine Type"]] = machine.finalMachineType;
+  out[cols["设备编号"]] = ctx.eamMap[machine.workcenter] || "";
+
+  // 是否主设备：机台号出现在 2. Active Cell 的 D 列（New Formed Cell）即为 Y，否则 N
+  // 按 A 列 Workcenter 匹配。Active Cell 不可用时保留原值（新增行无原值，留空）
+  if (ctx.cellsAvailable) {
+    out[cols["是否主设备"]] = Object.prototype.hasOwnProperty.call(ctx.cellMap, machine.workcenter) ? "Y" : "N";
+  }
+
+  // E–I：机组配置，键为 New Formed Cell；键为空（闲置）的行不参与
+  if (ctx.cellsAvailable && machine.newFormedCell) {
+    const cellValues = ctx.cellMap[machine.newFormedCell];
+    if (cellValues) {
+      _WS_CELL_HEADERS.forEach(function (h, i) { out[cols[h]] = cellValues[i]; });
+      ctx.report.cellSynced++;
+    } else {
+      _WS_CELL_HEADERS.forEach(function (h) { out[cols[h]] = ""; });
+      ctx.report.cellCleared.push(machine.workcenter);
     }
   }
 
-  return true;
+  return out;
+}
+
+function _ws_cellText(value) {
+  if (value === undefined || value === null) return "";
+  return String(value).trim();
+}
+
+// ========== 写回 ==========
+function _ws_writeBack(ws, width, matrix, previousRowCount) {
+  if (matrix.length > 0) {
+    ws.getRange(2, 1, matrix.length, width).setValues(matrix);
+  }
+  if (previousRowCount > matrix.length) {
+    ws.getRange(2 + matrix.length, 1, previousRowCount - matrix.length, width).clearContent();
+  }
 }
 
 // ========== Final Machine Type 智能转换 ==========
@@ -233,25 +361,3 @@ function _ws_convertFinalMachineType(machineType) {
   return typeStr;
 }
 
-// ========== 主设备判断 ==========
-function _ws_isMainEquipmentType(finalMachineType, machineType) {
-  // B列 Machine Type 以 HT 开头 → Y
-  if (machineType && typeof machineType === "string") {
-    const machineTypeStr = machineType.toString().trim();
-    if (machineTypeStr.startsWith("HT")) {
-      return "Y";
-    }
-  }
-
-  // D列 Final Machine Type 属于主设备类型列表 → Y
-  if (finalMachineType && typeof finalMachineType === "string") {
-    const typeStr = finalMachineType.toString().trim();
-    const mainEquipmentTypes = ["HS", "DP", "ENG", "FCS", "H Auto"];
-
-    if (mainEquipmentTypes.includes(typeStr)) {
-      return "Y";
-    }
-  }
-
-  return "N";
-}
