@@ -170,7 +170,7 @@ function keysOf(sheet) {
 }
 
 // ===== Cycle 1：已有机台就地更新 =====
-test('已有机台：更新 12 个程序列，人工列 M–S 原样保留', () => {
+test('已有机台：更新程序列，人工列 M–R 原样保留', () => {
   setup({
     line: [lineRow('M1', 'HT160', '', 'M1')],
     eam: [eamRow('EQ-001', 'M1')],
@@ -197,14 +197,14 @@ test('已有机台：更新 12 个程序列，人工列 M–S 原样保留', () 
   assert.equal(row[11], 'EQ-001', 'L 设备编号取 EAM 映射');
 });
 
-test('已有机台：人工列 M–S 一个都不动', () => {
+test('已有机台：人工列 M–R 一个都不动', () => {
   setup({
     line: [lineRow('M1', 'HT160', '正常', 'C1')],
     workcenter: [
       wcRow({
         'Workcenter': 'M1', 'Machine Type': '旧机型', '机器性能': '旧性能', 'New Formed Cell': '旧NFC',
         '机型': '机型X', '设备类型1': '类型1X', '设备类型2': '类型2X', '自动化类型': '自动X',
-        '责任人': '甲', '备份责任人': '乙', '无需检查Y/N': 'N',
+        '责任人': '甲', '备份责任人': '乙',
       }),
     ],
   });
@@ -218,7 +218,6 @@ test('已有机台：人工列 M–S 一个都不动', () => {
   assert.equal(row[15], '自动X', 'P 自动化类型');
   assert.equal(row[16], '甲', 'Q 责任人');
   assert.equal(row[17], '乙', 'R 备份责任人');
-  assert.equal(row[18], 'N', 'S 无需检查Y/N');
 });
 
 // ===== Cycle 2：追加与删除 =====
@@ -239,9 +238,10 @@ test('新机台：追加到末尾，只填程序列，人工列留空', () => {
   assert.equal(m2[9], 'FT400', 'J Final Machine Type');
   assert.equal(m2[10], 'N', 'K M2 不在 Active Cell 里 → N');
 
-  for (let i = 12; i <= 18; i++) {
+  for (let i = 12; i <= 17; i++) {
     assert.equal(m2[i], '', '人工列 ' + WC_HEADERS[i] + ' 应为空');
   }
+  assert.equal(m2[18], '', 'S 非免检 → 留空');
 });
 
 test('源里消失的机台：整行删除（含它的人工列）', () => {
@@ -372,6 +372,53 @@ test('安全阀边界：源表机台数恰好是表内一半 → 放行', () => 
 
   assert.deepEqual(keysOf(workcenterSheet()), ['M1', 'M2'], '正常执行删除');
   assert.ok(!logs.some(l => l.status === '跳过'), '没有跳过');
+});
+
+// ===== Cycle 7：【无需检查Y/N】自动判定 =====
+function sOf(setupOpts) {
+  setup(setupOpts);
+  globalThis.syncWorkcenterData();
+  return dataRows(workcenterSheet())[0][18];
+}
+
+test('无需检查：J=6AX 且 K=N → Y', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'FT400', '6AX', 'C1')],
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],  // M1 不在 Active Cell → K=N
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'Y');
+});
+
+test('无需检查：J=6AX 但 K=Y（是主设备）→ 留空', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'FT400', '6AX', 'M1')],
+    activeCell: [cellRow('M1', '', '', '', '', '')],    // M1 在 Active Cell → K=Y
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), '');
+});
+
+test('无需检查：J=NA（报废/闲置）→ Y', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'FT400', '报废', 'C1')],
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'Y');
+});
+
+test('无需检查：其他机型 → 留空', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'HT160', '', 'C1')],
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), '');
+});
+
+test('无需检查：S 列归程序管，人工改的值会被重算覆盖', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'HT160', '', 'C1')],           // J=HT160 → 非免检
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],
+    workcenter: [wcRow({ 'Workcenter': 'M1', '无需检查Y/N': 'Y' })],  // 人工写着 Y
+  }), '', '重算后应为空');
 });
 
 // ===== Cycle 6：Final Machine Type 写入规则 =====

@@ -15,11 +15,12 @@ const _ws_ID_EQU = "12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM";
 const _ws_SHEET_EQU = "Workcenter";
 const _ws_SHEET_EQUIPMENT_NUMBER = "Equipment_Number_EAM";
 
-// 本脚本管理的 12 个程序列（按表头名定位）
+// 本脚本管理的 13 个程序列（按表头名定位）
 const _WS_MANAGED_HEADERS = [
   "Workcenter", "Machine Type", "机器性能", "New Formed Cell",
   "HIM/Auto", "VIM-1", "VIM-2", "VIM-3", "VIM-4",
   "Final Machine Type", "是否主设备", "设备编号",
+  "无需检查Y/N",
 ];
 
 // 机组配置的 5 列：来源 2. Active Cell 的 M–Q，键为 New Formed Cell
@@ -315,6 +316,12 @@ function _ws_buildRow(row, width, machine, ctx) {
       ctx.report.cellCleared.push(machine.workcenter);
     }
   }
+
+  // 无需检查Y/N：6AX 且非主设备，或已退役（NA）→ Y；其余留空
+  // 由 J/K 派生，所以放在最后算，取的是本行最终值
+  const finalType = _ws_cellText(out[cols["Final Machine Type"]]);
+  const isMain = _ws_cellText(out[cols["是否主设备"]]);
+  out[cols["无需检查Y/N"]] = ((finalType === "6AX" && isMain === "N") || finalType === "NA") ? "Y" : "";
 
   return out;
 }
