@@ -99,6 +99,19 @@ function _pc_buildIncludedSet(dataWC) {
   return { included: included, flagged: flagged, missing: [], duplicates: duplicates, badFlags: badFlags };
 }
 
+/**
+ * 由机台号推导车间：从左数第 2 个字符
+ * 实测 Workcenter 全部 326 台机台第二位只有 0/1/2；其他值一律留空交人工（不猜）
+ * @param {string} machineNo
+ * @returns {string} "TB1" | "TB2" | ""
+ */
+function _pc_deriveWorkshop(machineNo) {
+  const c = String(machineNo || "").charAt(1);
+  if (c === "0" || c === "1") return "TB1";
+  if (c === "2") return "TB2";
+  return "";
+}
+
 // ========== 主入口 ==========
 function checkPointCheckMachines(e) {
   const trigger = e ? "定时" : "手动";
