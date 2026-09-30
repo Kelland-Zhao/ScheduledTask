@@ -35,3 +35,109 @@ test('车间推导：意外值 → 留空（不猜）', () => {
   assert.equal(globalThis._pc_deriveWorkshop('H3FTA001'), '');
   assert.equal(globalThis._pc_deriveWorkshop('HXFTA001'), '');
 });
+
+// —— 取样自生产表 `Database_PointCheck-点检后台数据` → `MachineList` 的 INJ 段 ——
+// 工序/车间/机型/机台号/点检人均为该表真实值；rowIndex 只是测试用行号占位，
+// 不绑定具体行（该表会被人工编辑，行号在漂移：本次取样后又上移了 2 行）
+const ML_HEADERS = ['工序', '车间', '机型', '机台号', '点检人'];
+const mlRow = (a, b, c, d, e) => [a, b, c, d, e];
+
+const INJ_ROWS_FIXTURE = [
+  { rowIndex: 1051, machineNo: 'H2FCS506', rowData: mlRow('INJ', 'TB2', '6AX(自动化部分 for FCS)', 'H2FCS506', '技术员') },
+  { rowIndex: 1052, machineNo: 'H2FCS506', rowData: mlRow('INJ', 'TB2', 'FCS', 'H2FCS506', 'OPC') },
+  { rowIndex: 1053, machineNo: 'H2HTA520', rowData: mlRow('INJ', 'TB2', '6AX', 'H2HTA520', 'OPC') },
+  { rowIndex: 1058, machineNo: 'V1FTA958', rowData: mlRow('INJ', 'TB1', 'OMNI', 'V1FTA958', '技术员') },
+];
+
+const builtWith = (machines, flagged) => ({
+  included: machines, flagged: flagged || {}, missing: [], duplicates: [], badFlags: [],
+});
+
+test('同机台号多行：整组一起删除，snapshot 含全部行', () => {
+  const plan = globalThis._pc_computeSyncPlan(
+    INJ_ROWS_FIXTURE,
+    builtWith({}, { H2FCS506: true })   // 501/502 被标Y，其余在 included 里
+  );
+  // 注意：本用例只标了 H2FCS506，故其它机会进 ABSENT 删除集，见下条断言
+  const d = plan.toDelete.find(x => x.machineNo === 'H2FCS506');
+
+  assert.ok(d, 'H2FCS506 应进删除集');
+  assert.deepEqual(d.rowIndexes, [1051, 1052], '两行整组一起删');
+  assert.equal(d.reason, 'FLAG');
+  assert.equal(d.snapshot.length, 2, '快照要含两行，只记机台号无法恢复');
+});
+
+test('删除原因区分：表11标Y → FLAG；表11完全没有 → ABSENT', () => {
+  const plan = globalThis._pc_computeSyncPlan(
+    INJ_ROWS_FIXTURE,
+    builtWith({ V1FTA958: {} }, { H2FCS506: true })
+  );
+
+  const reasons = plan.toDelete.map(x => [x.machineNo, x.reason]).sort();
+  assert.deepEqual(reasons, [
+    ['H2FCS506', 'FLAG'],     // 表11 有这行，但标了 Y
+    ['H2HTA520', 'ABSENT'],   // 表11 里根本没有
+  ]);
+});
+
+test('Plasma 的 INJ 行不删除，进 plasmaKept', () => {
+  // 真实数据：生产表 MachineList 中唯一的 Plasma 行 —— 机型与机台号**都是** `Plasma`。
+  // 机台号是裸值 `Plasma`，所以断言归一化后的 `PLASMA` —— 顺带锁住 raw → 归一 这一步
+  // （若改用大写且无空格的编造号，这个断言就抓不住归一化回归）
+  const rows = [
+    { rowIndex: 844, machineNo: 'Plasma', rowData: mlRow('INJ', 'TB1', 'Plasma', 'Plasma', '技术员') },
+  ];
+  const plan = globalThis._pc_computeSyncPlan(rows, builtWith({}));
+
+  assert.deepEqual(plan.toDelete, [], 'Plasma 不删');
+  assert.deepEqual(plan.plasmaKept.map(x => x.machineNo), ['PLASMA']);
+});
+
+test('纳入集有、MachineList 无 → 进追加集，字段按规则推导', () => {
+  const plan = globalThis._pc_computeSyncPlan(
+    INJ_ROWS_FIXTURE,
+    builtWith({ H2FCS506: {}, H2HTA520: {}, V1FTA958: {}, E0EN0001: {} })
+  );
+
+  assert.deepEqual(plan.toDelete, [], '四台都在纳入集里，没有要删的');
+  assert.deepEqual(plan.append, [{ machineNo: 'E0EN0001', workshop: 'TB1' }]);
+});
+
+test('机台号为空/仅空格的 INJ 行：不参与增删，也不报错', () => {
+  // 防御性用例：生产表当前**没有**机台号为空的行。这里守住的是
+  // 「读表异常/列错位导致机台号读空」时，不能把这批行当成「表11查不到」而删掉
+  const rows = INJ_ROWS_FIXTURE.concat([
+    { rowIndex: 901, machineNo: '', rowData: mlRow('INJ', 'TB2', '', '', '技术员') },
+    { rowIndex: 902, machineNo: '   ', rowData: mlRow('INJ', 'TB2', '', '   ', '技术员') },
+  ]);
+  const plan = globalThis._pc_computeSyncPlan(rows, builtWith({ H2FCS506: {}, H2HTA520: {}, V1FTA958: {} }));
+
+  assert.deepEqual(plan.toDelete, [], '空机台号不能被当成"表11查不到"而删掉');
+  assert.deepEqual(plan.append, []);
+});
+
+test('追加集按车间留空计入待补全（意外第2位）', () => {
+  const rows = [{ rowIndex: 1058, machineNo: 'V1FTA958', rowData: mlRow('INJ', 'TB1', 'OMNI', 'V1FTA958', '技术员') }];
+  const plan = globalThis._pc_computeSyncPlan(rows, builtWith({ V1FTA958: {}, H3FTA001: {} }));
+
+  assert.deepEqual(plan.append, [{ machineNo: 'H3FTA001', workshop: '' }]);
+});
+
+test('防御：MachineList 的 INJ 段读空 → 不追加任何机台', () => {
+  // 若这里返回整个纳入集，INJ 段一旦读取异常就会把几百台计划账机台灌进点检表
+  const plan = globalThis._pc_computeSyncPlan([], builtWith({ H2FTA001: {}, H2FTA002: {}, H2FTA003: {} }));
+
+  assert.deepEqual(plan, { append: [], toDelete: [], plasmaKept: [] });
+});
+
+test('防御：INJ 行非空但机台号列全读空 → 同样不追加任何机台', () => {
+  // 与上一条同源、不同扳机：列错位/读表异常时 injRows 非空而机台号全空，
+  // mlGroups 会是空的 —— 不守的话整个纳入集照样被当成「待追加」批量写进主数据
+  const rows = [
+    { rowIndex: 901, machineNo: '', rowData: mlRow('INJ', 'TB2', '', '', '技术员') },
+    { rowIndex: 902, machineNo: '   ', rowData: mlRow('INJ', 'TB2', '', '   ', '技术员') },
+  ];
+  const plan = globalThis._pc_computeSyncPlan(rows, builtWith({ H2FTA001: {}, H2FTA002: {} }));
+
+  assert.deepEqual(plan, { append: [], toDelete: [], plasmaKept: [] });
+});

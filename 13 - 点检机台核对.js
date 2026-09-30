@@ -19,6 +19,7 @@ const _pc_HEADER_MACHINE_TYPE = "Machine Type";
 const _pc_HEADER_FINAL_TYPE = "Final Machine Type";
 const _pc_HEADER_FLAG = "无需检查Y/N";
 const _pc_FLAG_YES = "Y";
+const _pc_EXEMPT_PLASMA = "Plasma";       // 点检侧独有、表11 完全没有的机型，不纳入删除
 
 const _pc_ID_PERMISSION = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
 const _pc_SHEET_USERID = "userID";
@@ -110,6 +111,67 @@ function _pc_deriveWorkshop(machineNo) {
   if (c === "0" || c === "1") return "TB1";
   if (c === "2") return "TB2";
   return "";
+}
+
+/**
+ * 算出本次同步计划（纯函数，不做任何 IO）
+ * 比对键 = 机台号；一台机在 MachineList 中可能占多行，整组一起进、一起出
+ * @param {Array<{rowIndex: number, machineNo: string, rowData: Array}>} injRows MachineList 中 工序=INJ 的行
+ * @param {{included: Object, flagged: Object}} built _pc_buildIncludedSet 的结果
+ * @returns {{append: Array, toDelete: Array, plasmaKept: Array}}
+ */
+function _pc_computeSyncPlan(injRows, built) {
+  // 防御：MachineList 的 INJ 段读空时，绝不能把整个纳入集当成「待追加」灌进去
+  if (!injRows || injRows.length === 0) return { append: [], toDelete: [], plasmaKept: [] };
+
+  const included = built.included || {};
+  const flagged = built.flagged || {};
+
+  // 按机台号聚拢 MachineList 的行（保留首次出现顺序，供追加位置与稳定性判断）
+  const mlGroups = {};
+  injRows.forEach(function (r) {
+    const no = _pc_normalizeMachineNo(r.machineNo);
+    if (!no) return;                       // 机台号为空的行不参与比对
+    if (!mlGroups[no]) mlGroups[no] = { rows: [], rowData: [] };
+    mlGroups[no].rows.push(r.rowIndex);
+    mlGroups[no].rowData.push(r.rowData);
+  });
+
+  // 二次防御：injRows 非空但机台号列全读空（列错位/读表异常）→ mlGroups 为空，
+  // 不守的话整个纳入集照样会被当成「待追加」批量写进主数据。同一灾难、不同扳机
+  if (Object.keys(mlGroups).length === 0) return { append: [], toDelete: [], plasmaKept: [] };
+
+  const toDelete = [];
+  const plasmaKept = [];
+
+  Object.keys(mlGroups).forEach(function (no) {
+    const g = mlGroups[no];
+    if (Object.prototype.hasOwnProperty.call(included, no)) return;   // 两侧都有 → 不动
+
+    // 表11 完全没有 / 已被标Y → 删；但 Plasma 机型豁免
+    const isPlasma = g.rowData.some(function (d) {
+      return String(d[2] || "").trim() === _pc_EXEMPT_PLASMA;
+    });
+    if (isPlasma) {
+      plasmaKept.push({ machineNo: no, rowIndexes: g.rows });
+      return;
+    }
+
+    toDelete.push({
+      machineNo: no,
+      rowIndexes: g.rows,
+      reason: Object.prototype.hasOwnProperty.call(flagged, no) ? "FLAG" : "ABSENT",
+      snapshot: g.rowData,
+    });
+  });
+
+  const append = [];
+  Object.keys(included).forEach(function (no) {
+    if (Object.prototype.hasOwnProperty.call(mlGroups, no)) return;
+    append.push({ machineNo: no, workshop: _pc_deriveWorkshop(no) });
+  });
+
+  return { append: append, toDelete: toDelete, plasmaKept: plasmaKept };
 }
 
 // ========== 主入口 ==========
