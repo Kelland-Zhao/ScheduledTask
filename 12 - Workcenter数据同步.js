@@ -335,6 +335,10 @@ function _ws_writeBack(ws, width, matrix, previousRowCount) {
 }
 
 // ========== Final Machine Type 智能转换 ==========
+// 机器性能 列里混着两类内容：细分机型（6AX/3AX/H Auto…）与状态（报废/闲置）。
+// 状态类机台机型已无意义 → 统一写 NA。
+const _WS_STATUS_PATTERN = /报废|闲置/;
+
 function _ws_convertFinalMachineType(machineType) {
   if (!machineType || typeof machineType !== "string") {
     return machineType;
@@ -342,20 +346,19 @@ function _ws_convertFinalMachineType(machineType) {
 
   const typeStr = machineType.toString().trim();
 
+  // 状态类文本（报废/闲置，含「机台号报废,原665机器闲置」这类混合写法）→ NA
+  if (_WS_STATUS_PATTERN.test(typeStr)) {
+    return "NA";
+  }
+
   // E 开头 → ENG
   if (typeStr.startsWith("E")) {
     return "ENG";
   }
 
-  // F 开头 + F数字(数字) 格式（排除 FT400）→ FCS
+  // F 开头 → FCS；FT400 例外，保持原值
   if (typeStr.startsWith("F")) {
-    if (typeStr === "FT400") {
-      return typeStr; // 保持原值
-    }
-
-    if (/^F\d+\(\d+\)$/.test(typeStr)) {
-      return "FCS";
-    }
+    return typeStr === "FT400" ? typeStr : "FCS";
   }
 
   return typeStr;

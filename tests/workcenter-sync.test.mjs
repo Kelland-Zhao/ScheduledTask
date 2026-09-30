@@ -374,6 +374,73 @@ test('安全阀边界：源表机台数恰好是表内一半 → 放行', () => 
   assert.ok(!logs.some(l => l.status === '跳过'), '没有跳过');
 });
 
+// ===== Cycle 6：Final Machine Type 写入规则 =====
+function jOf(setupOpts) {
+  setup(setupOpts);
+  globalThis.syncWorkcenterData();
+  return dataRows(workcenterSheet())[0][9];
+}
+
+test('Final Machine Type：机器性能为「报废」→ NA', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'FT400', '报废', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'NA');
+});
+
+test('Final Machine Type：机器性能为「闲置」→ NA', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'FT400', '闲置', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'NA');
+});
+
+test('Final Machine Type：机器性能含混合状态文本（机台号报废,原665机器闲置）→ NA', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'HT160 G', '机台号报废,原665机器闲置', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'NA');
+});
+
+test('Final Machine Type：F350 → FCS（不再要求后跟括号数字）', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'F350', '', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'FCS');
+});
+
+test('Final Machine Type：F600(3) → FCS（原有行为不变）', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'F600(3)', '', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'FCS');
+});
+
+test('Final Machine Type：FT400 保持原样，不转 FCS', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'FT400', '', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'FT400');
+});
+
+test('Final Machine Type：E110 → ENG，HT160 → 原样', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'E110', '', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'ENG');
+  assert.equal(jOf({
+    line: [lineRow('M2', 'HT160', '', 'C2')],
+    workcenter: [wcRow({ 'Workcenter': 'M2' })],
+  }), 'HT160');
+});
+
+test('Final Machine Type：机器性能非状态时仍优先于 Machine Type', () => {
+  assert.equal(jOf({
+    line: [lineRow('M1', 'HT160 3X', '3AX', 'C1')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), '3AX');
+});
+
 // ===== Cycle 5：【是否主设备】改为按 Active Cell 成员资格判定 =====
 test('是否主设备：机台号出现在 Active Cell 的 D 列 → Y', () => {
   setup({
