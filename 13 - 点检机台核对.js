@@ -1,8 +1,9 @@
-// V20260605.1 — 点检机台核对
+// V20260930.01 — 点检机台核对
 // 入口：checkPointCheckMachines（每日 08:25 定时 or 手动）
-// 逻辑：比对 MachineList(工序=INJ) 与 Workcenter(C列≠闲置) 的机台差异，
+// 逻辑：比对 MachineList(工序=INJ) 与 Workcenter(机器性能列≠闲置) 的机台差异，
 //       差异1（点检有/计划账无）→ MachineList 标黄 + 邮件，
 //       差异2（计划账有/点检无）→ 仅邮件，Final Machine Type=6AX/DP/HS 豁免
+// 2026-09-30：Workcenter 表由 11 列改为 19 列，改为按表头名定位列
 
 // ========== 数据源配置 ==========
 const _pc_ID_POINTCHECK = "1RQql-PrcBWiAQNeg7hQKcocpllSUMRhT5XPrDTVWoBY";
@@ -11,7 +12,7 @@ const _pc_FILTER_PROCESS = "INJ";         // 工序过滤条件
 
 const _pc_ID_PLAN = "12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM";
 const _pc_SHEET_WORKCENTER = "Workcenter";
-const _pc_EXCLUDE_KEYWORD = "闲置";       // Workcenter C列排除关键字
+const _pc_EXCLUDE_KEYWORD = "闲置";       // Workcenter 机器性能列排除关键字
 
 const _pc_ID_PERMISSION = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
 const _pc_SHEET_USERID = "userID";
@@ -20,6 +21,43 @@ const _pc_PERM_ROLE_COL = 15;             // P列: 职位
 const _pc_PERM_EMAIL_COL = 9;             // J列: GMail
 const _pc_PERM_PROCESS_VAL = "INJ";
 const _pc_PERM_ROLE_VAL = "S&C";
+
+// ========== Workcenter 读取（按表头名定位列） ==========
+function _pc_headerIndex(headerRow) {
+  const idx = {};
+  for (let i = 0; i < headerRow.length; i++) {
+    const name = String(headerRow[i] || "").trim();
+    if (name && idx[name] === undefined) idx[name] = i; // 重名取第一列
+  }
+  return idx;
+}
+
+/**
+ * 把 Workcenter 数据区转成 机台号 → { machineType, machineModel }
+ * @param {Array<Array>} dataWC getDataRange().getValues() 全量（含表头行）
+ * @param {string} excludeKeyword 机器性能列命中即排除的关键字（闲置）
+ * @returns {{map: Object, missing: Array<string>}} missing 非空时调用方应跳过，不要用空 map 继续
+ */
+function _pc_buildWorkcenterMap(dataWC, excludeKeyword) {
+  const required = ["Workcenter", "Machine Type", "机器性能", "Final Machine Type"];
+  const cols = _pc_headerIndex(dataWC[0] || []);
+  const missing = required.filter(function (n) { return cols[n] === undefined; });
+  if (missing.length > 0) return { map: {}, missing: missing };
+
+  const map = {};
+  for (let i = 1; i < dataWC.length; i++) {
+    if (String(dataWC[i][cols["机器性能"]] || "").trim() === excludeKeyword) continue;
+
+    const wc = String(dataWC[i][cols["Workcenter"]] || "").trim();
+    if (wc) {
+      map[wc] = {
+        machineType: String(dataWC[i][cols["Machine Type"]] || "").trim(),
+        machineModel: String(dataWC[i][cols["Final Machine Type"]] || "").trim(),
+      };
+    }
+  }
+  return { map: map, missing: [] };
+}
 
 // ========== 主入口 ==========
 function checkPointCheckMachines(e) {
@@ -66,19 +104,12 @@ function checkPointCheckMachines(e) {
       return;
     }
 
-    const wcMap = {};  // Workcenter → { machineType, finalMachineType, ... }
-    for (let i = 1; i < dataWC.length; i++) {
-      const colC = String(dataWC[i][2] || "").trim();
-      if (colC === _pc_EXCLUDE_KEYWORD) continue;
-
-      const wc = String(dataWC[i][0] || "").trim();
-      if (wc) {
-        wcMap[wc] = {
-          machineType: String(dataWC[i][1] || "").trim(),       // B列 Machine Type
-          machineModel: String(dataWC[i][3] || "").trim(),       // D列 Final Machine Type
-        };
-      }
+    const built = _pc_buildWorkcenterMap(dataWC, _pc_EXCLUDE_KEYWORD);
+    if (built.missing.length > 0) {
+      writeLog("checkPointCheckMachines", "跳过", "Workcenter 表头缺少字段: " + built.missing.join(", "), trigger, "");
+      return;
     }
+    const wcMap = built.map;  // Workcenter → { machineType, machineModel }
 
     console.log("Workcenter 有效行数(排除闲置): " + Object.keys(wcMap).length);
 

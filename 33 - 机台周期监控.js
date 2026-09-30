@@ -1,6 +1,7 @@
-// V20260719.02 — 机台周期监控
+// V20260930.01 — 机台周期监控
 // 入口: monitorMachineCycle（每日 8:10 定时 or 手动）
-// Step 1: Workcenter(E=Y,D=6AX) → 同步至机台周期标准
+// Step 1: Workcenter(是否主设备=Y, Final Machine Type=6AX) → 同步至机台周期标准
+// 2026-09-30：Workcenter 表由 11 列改为 19 列，改为按表头名定位列
 // Step 2: 检查标准周期为空 → 邮件提醒 S&C 维护
 // Step 3: IoT_Data 最新文件 → 按机台+班别取平均 → 写机台周期实际值
 // Step 4: 平均 vs 标准 > 0.5s → 邮件报警 IDL+S&C
@@ -136,6 +137,44 @@ function _mc_shiftLabel(shiftVal, prodDate) {
 
 // ========== Step 1: 机台清单同步 ==========
 
+// 按表头名定位列，不硬编码列号
+function _mc_headerIndex(headerRow) {
+  var idx = {};
+  for (var i = 0; i < headerRow.length; i++) {
+    var name = String(headerRow[i] || "").trim();
+    if (name && idx[name] === undefined) idx[name] = i; // 重名取第一列
+  }
+  return idx;
+}
+
+/**
+ * 从 Workcenter 数据区筛选「是否主设备=Y 且 Final Machine Type=目标机型」的机台
+ * @param {Array<Array>} data getDataRange().getValues() 全量（含表头行）
+ * @param {string} targetType 目标机型，如 6AX
+ * @returns {{machines: Object<string,string>, missing: Array<string>}} missing 非空时调用方应跳过
+ */
+function _mc_selectMachines(data, targetType) {
+  var required = ["Workcenter", "Final Machine Type", "是否主设备"];
+  var cols = _mc_headerIndex(data[0] || []);
+  var missing = required.filter(function (n) { return cols[n] === undefined; });
+  if (missing.length > 0) {
+    console.warn("Workcenter 表头缺少字段: " + missing.join(", ") + "，本次不同步机台");
+    return { machines: {}, missing: missing };
+  }
+
+  var machines = {};
+  for (var r = 1; r < data.length; r++) {
+    var row = data[r];
+    var mainFlag = String(row[cols["是否主设备"]] || "").trim();
+    var machineType = String(row[cols["Final Machine Type"]] || "").trim();
+    var workcenter = String(row[cols["Workcenter"]] || "").trim();
+    if (mainFlag === "Y" && machineType === targetType && workcenter) {
+      machines[workcenter] = machineType;
+    }
+  }
+  return { machines: machines, missing: [] };
+}
+
 /**
  * 从 Workcenter 筛选机台，对比标准表，自动补入缺失
  * @returns {{newCount: number, newMachines: Array<{workcenter: string, machineType: string}>}}
@@ -147,20 +186,13 @@ function _mc_syncMachines() {
     return { newCount: 0, newMachines: [] };
   }
 
-  // 读 Workcenter
+  // 读 Workcenter（Row 1 为表头，数据从 Row 2 起）
   var data = ws.getDataRange().getValues();
-  // Row 1: header, data from row 2
-  var workcenterMachines = {};
-  for (var r = 1; r < data.length; r++) {
-    var row = data[r];
-    var eVal = String(row[4] || "").trim();  // E列(0-indexed:4) 是否主设备
-    var dVal = String(row[3] || "").trim();  // D列(0-indexed:3) Final Machine Type
-    var aVal = String(row[0] || "").trim();  // A列(0-indexed:0) Workcenter 机台号
-
-    if (eVal === "Y" && dVal === _mc_TARGET_MACHINE_TYPE && aVal) {
-      workcenterMachines[aVal] = dVal;
-    }
+  var picked = _mc_selectMachines(data, _mc_TARGET_MACHINE_TYPE);
+  if (picked.missing.length > 0) {
+    return { newCount: 0, newMachines: [] };
   }
+  var workcenterMachines = picked.machines;
   console.log("Workcenter " + _mc_TARGET_MACHINE_TYPE + " 机台: " + Object.keys(workcenterMachines).length + " 台");
 
   // 读标准表现有机台
