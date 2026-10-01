@@ -86,6 +86,22 @@ test('比对仍用归一值：表11 原值含空格/小写也能与 MachineList 
   assert.deepEqual(plan.toDelete, [], '归一后两侧都有 → 不删除');
 });
 
+test('Y 优先：同号「非 Y 行在前、Y 行在后」→ 整台排除且计入重复告警', () => {
+  // 顺序是这条用例的全部：先非 Y 后 Y 才会走到 `delete included[machineNo]` ——
+  // 「任一行标 Y 就整台不点检」的关键一步，此前没有一条用例会在它被删掉时失败。
+  // 反过来的顺序（先 Y 后非 Y）走的是 flagged 分支，在 workcenter 测试里已有覆盖。
+  const built = globalThis._pc_buildIncludedSet([
+    WC_HEADERS_MIN,
+    wcRow('H2FTA002', ''),     // 非 Y：先进纳入集
+    wcRow('H2FTA002', 'Y'),    // 同号标 Y：必须把已进的条目清掉，整台排除
+    wcRow('H2FTA001', ''),
+  ]);
+
+  assert.deepEqual(Object.keys(built.included), ['H2FTA001'], 'H2FTA002 被 Y 行整台排除');
+  assert.equal(built.flagged['H2FTA002'], true);
+  assert.deepEqual(built.duplicates, ['H2FTA002'], '同号多行且判定冲突，必须告警而不是静默清掉');
+});
+
 test('同机台号多行：整组一起删除，snapshot 含全部行', () => {
   const plan = globalThis._pc_computeSyncPlan(
     INJ_ROWS_FIXTURE,
@@ -186,6 +202,19 @@ test('安全阀：拟删 10 台 → 执行；11 台 → 拦下', () => {
 
 test('安全阀：手动运行绕过（人工放行）', () => {
   assert.equal(globalThis._pc_shouldDelete(50, true).ok, true);
+});
+
+test('安全阀：拟删台数不是有限数字 → 拒绝删除并说明（fail closed）', () => {
+  // 阀守的是不可逆的删除：算不出/读不到台数时必须当作「不确定」拦下。
+  // 原实现 `undefined > 10 === false` → 放行（fail open），是最危险的失败方向。
+  // 手动运行也不豁免：台数都读不到，人不可能核对过这份清单
+  const missing = globalThis._pc_shouldDelete(undefined, false);
+  assert.equal(missing.ok, false, 'undefined 不能被当成 0 台放行');
+  assert.match(missing.reason, /数字|无效|无法/, '原因要说明台数无效');
+
+  assert.equal(globalThis._pc_shouldDelete(NaN, false).ok, false);
+  assert.equal(globalThis._pc_shouldDelete('', false).ok, false, '空串同样不是有效台数');
+  assert.equal(globalThis._pc_shouldDelete(undefined, true).ok, false, '台数读不到时手动也不放行');
 });
 
 test('安全阀计数单位是机台数不是行数', () => {

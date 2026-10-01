@@ -113,6 +113,11 @@ function _pc_buildIncludedSet(dataWC) {
     }
 
     if (rawFlag === _pc_FLAG_YES) {
+      // 同号多行：一行标 Y 即整台排除。若同号此前已作为非 Y 行进过纳入集，
+      // 这次覆盖属于「同号重复且判定冲突」——静默 delete 会让表11 的重复问题不被看见
+      if (Object.prototype.hasOwnProperty.call(included, machineNo)) {
+        duplicates.push(machineNo);
+      }
       flagged[machineNo] = true;
       delete included[machineNo];   // Y 优先：同号任一行标 Y，整台机就不点检
       continue;
@@ -226,6 +231,15 @@ function _pc_computeSyncPlan(injRows, built) {
  * @returns {{ok: boolean, reason: string}}
  */
 function _pc_shouldDelete(deleteCount, isManual) {
+  // 先校数，且不受手动放行豁免：阀守的是不可逆的删除，台数读到非有限数字
+  // （undefined/NaN/字符串）时无法核对清单，必须 fail closed ——
+  // 不守的话 `undefined > 10 === false` 会被当成「0 台，放行」
+  if (!Number.isFinite(deleteCount)) {
+    return {
+      ok: false,
+      reason: "拟删除台数无效（" + String(deleteCount) + "），无法核对，本次仅报告未执行删除",
+    };
+  }
   if (isManual) return { ok: true, reason: "" };
   if (deleteCount > _pc_DELETE_LIMIT) {
     return {
