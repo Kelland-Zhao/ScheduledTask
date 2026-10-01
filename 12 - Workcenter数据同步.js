@@ -5,6 +5,8 @@
 //   · E–I ← 2. Active Cell 的 M–Q，键为 D 列 New Formed Cell
 //   · K 是否主设备 ← 机台号出现在 2. Active Cell 的 D 列即为 Y，否则 N
 // 列定位一律按表头名解析，不硬编码列号
+// 同步末尾另发「机台主数据维护提醒」：J≠NA 且 M–R 六个人工列任一为空的机台每天提醒，直到补齐
+//   · 定时运行 → TO 注塑 S&C、CC 注塑 IDL；手动运行只发操作者（防调试误伤）；测试入口 testWorkcenterMaintenanceReminder
 
 // ========== 数据源配置 ==========
 const _ws_ID_PLAN = "11zyH65MhC-LuqsEXT6KeO3-GQ3jwW7z7kJjHD0TwLZc";
@@ -31,6 +33,25 @@ const _WS_HEADER_SCAN_ROWS = 5;
 
 // 安全阀：源表机台数低于表内现有行数这个比例时中止，防止源表异常读空后把整表删光
 const _WS_MIN_SOURCE_RATIO = 0.5;
+
+// ========== 机台主数据维护提醒配置 ==========
+// 人工维护列（EDS「注塑机台主数据」维护页的维护对象）：任一为空且 J≠NA 即进提醒名单
+// 注意：S（工艺无需检查Y/N）是上面 _WS_MANAGED_HEADERS 里的程序列；T 空是「需点检」的合法默认，都不在此列
+const _WS_MAINT_HEADERS = ["机型", "设备类型1", "设备类型2", "自动化类型", "责任人", "备份责任人"];
+const _WS_MAINT_EXCLUDED_FINAL_TYPE = "NA";   // 报废/闲置机台不要求维护
+const _WS_MAINT_SENDER_NAME = "机台主数据维护提醒";
+const _ws_MAINT_OPERATOR_EMAIL = "kelland_zhao@colpal.com";   // 手动运行只发这里（防误伤）；测试入口也发这里
+
+// 收件人来源表：userID（前两行为分组/字段表头；模块 13 同款列位）
+const _ws_ID_USER = "1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM";
+const _ws_SHEET_USERID = "userID";
+const _ws_USER_COL_PROC = 14;   // O 列 工序（EDS 组）
+const _ws_USER_COL_POS = 15;    // P 列 职位（EDS 组）
+const _ws_USER_COL_MAIL = 9;    // J 列 GMail
+
+// EDS「注塑机台主数据」维护页（EQU-Digital-System 生产部署路由）与 Workcenter 表链接
+const _ws_URL_EDS_MM = "https://script.google.com/a/colpal.com/macros/s/AKfycbyaQjG5yFGYxU825DrODhSLl2bdfbYKpqAH4qOIzKoTJ4b-5qU/exec?v=INJ_MachineMaster";
+const _ws_URL_WC = "https://docs.google.com/spreadsheets/d/" + _ws_ID_EQU + "/edit#gid=0";
 
 // ========== 主入口 ==========
 function syncWorkcenterData(e) {
@@ -77,11 +98,15 @@ function syncWorkcenterData(e) {
     // 6. 写回
     _ws_writeBack(targetWs, targetData[0].length, plan.matrix, targetData.length - 1);
 
+    // 7. 机台主数据维护提醒（M–R 人工列未补齐的机台每天提醒；内部自捕获，失败不影响同步结果）
+    const maintNote = _ws_runMaintenanceReminder(targetData[0], plan, trigger);
+
     const summary = "更新 " + plan.report.updated.length +
       " / 新增 " + plan.report.added.length +
       " / 删除 " + plan.report.deleted.length +
       " / E–I 同步 " + plan.report.cellSynced +
-      " / E–I 清空 " + plan.report.cellCleared.length;
+      " / E–I 清空 " + plan.report.cellCleared.length +
+      maintNote;
     console.log("同步完成：" + summary);
     if (plan.report.deleted.length > 0) {
       console.log("已删除的机台: " + plan.report.deleted.join(", "));
@@ -337,6 +362,159 @@ function _ws_buildRow(row, width, machine, ctx) {
 function _ws_cellText(value) {
   if (value === undefined || value === null) return "";
   return String(value).trim();
+}
+
+// ========== 机台主数据维护提醒 ==========
+// 判据（纯函数）：J≠NA 且 M–R 六个人工列任一为空 → 进名单；返回 [{workcenter, missing, isNew}]
+// matrix 为最终写入的内容（新增行人工列天然为空，会被当日提醒；补齐后次日自动停止）
+function _ws_findMaintenancePending(cols, matrix, addedSet) {
+  const pending = [];
+  const seen = new Set();
+  for (let i = 0; i < matrix.length; i++) {
+    const row = matrix[i] || [];
+    const workcenter = _ws_cellText(row[cols["Workcenter"]]);
+    if (!workcenter || seen.has(workcenter)) continue;   // 重复机台号取第一条
+    seen.add(workcenter);
+    if (_ws_cellText(row[cols["Final Machine Type"]]) === _WS_MAINT_EXCLUDED_FINAL_TYPE) continue;
+
+    const missing = _WS_MAINT_HEADERS.filter(function (h) {
+      return _ws_cellText(row[cols[h]]) === "";
+    });
+    if (missing.length === 0) continue;
+    pending.push({ workcenter: workcenter, missing: missing, isNew: addedSet.has(workcenter) });
+  }
+  return pending;
+}
+
+// 收件人（纯函数）：userID 前两行为表头，数据从第 3 行起
+// TO = 工序 INJ 且职位含 S&C；CC = 工序 INJ 且职位 IDL（职位大小写/空格归一，工序 trim 后精确匹配）
+function _ws_parseMaintenanceRecipients(userData) {
+  const to = [];
+  const cc = [];
+  for (let r = 2; r < userData.length; r++) {
+    const row = userData[r] || [];
+    const proc = _ws_cellText(row[_ws_USER_COL_PROC]);
+    const pos = _ws_cellText(row[_ws_USER_COL_POS]).toUpperCase();
+    const mail = _ws_cellText(row[_ws_USER_COL_MAIL]).toLowerCase();
+    if (!mail || proc !== "INJ") continue;
+    if (pos.indexOf("S&C") >= 0) {
+      if (to.indexOf(mail) < 0) to.push(mail);
+    } else if (pos === "IDL") {
+      if (cc.indexOf(mail) < 0) cc.push(mail);
+    }
+  }
+  return { to: to, cc: cc };
+}
+
+function _ws_getMaintenanceRecipients() {
+  const ws = SpreadsheetApp.openById(_ws_ID_USER).getSheetByName(_ws_SHEET_USERID);
+  if (!ws) {
+    console.warn("维护提醒：找不到 " + _ws_SHEET_USERID + " 表，收件人为空");
+    return { to: [], cc: [] };
+  }
+  return _ws_parseMaintenanceRecipients(ws.getDataRange().getValues());
+}
+
+// 车间推导：机台号第 2 位 0/1 → TB1、2 → TB2，其他留空（与模块 13 同规则）
+function _ws_deriveWorkshop(machineNo) {
+  const s = _ws_cellText(machineNo);
+  if (s.length < 2) return "";
+  const c = s.charAt(1);
+  if (c === "0" || c === "1") return "TB1";
+  if (c === "2") return "TB2";
+  return "";
+}
+
+// 邮件 HTML：模式 A 红底头部 + buildHtmlTable + 两个入口链接（遵循 docs/邮件UI规范.md）
+function _ws_buildMaintenanceEmailHtml(pending, today) {
+  let html = '<!DOCTYPE html><html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body>';
+  html += '<div style="font-family:Arial,\'Microsoft YaHei\',\'Helvetica Neue\',sans-serif;max-width:900px;margin:0 auto">';
+  html += '<div style="background:#E60012;color:white;padding:16px 24px">';
+  html += '<h2 style="margin:0">机台主数据维护提醒</h2>';
+  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px">Workcenter 同步发现 ' + pending.length + ' 台机台的属性列未补齐</p>';
+  html += '<p style="margin:4px 0 0;opacity:0.7;font-size:12px">发送时间：' + escapeHtml(today) + '</p>';
+  html += '</div>';
+  html += '<div style="padding:24px">';
+  html += '<p style="color:#e67e22;font-weight:bold;margin:0 0 12px">⚠ 请在 EDS「注塑机台主数据」维护页补齐以下机台（该页面只能改、不能增删机台）</p>';
+  html += buildHtmlTable(
+    ["机台号", "车间", "缺失字段", "类型"],
+    pending.map(function (p) {
+      return [p.workcenter, _ws_deriveWorkshop(p.workcenter) || "-", p.missing.join("、"), p.isNew ? "本次新增" : "待补齐"];
+    }),
+    "#E60012");
+  html += '<p style="font-size:13px;color:#34495e;margin-top:16px">维护入口：';
+  html += '<a href="' + _ws_URL_EDS_MM + '" style="color:#E60012">注塑机台主数据维护页</a>';
+  html += ' ｜ 数据表：<a href="' + _ws_URL_WC + '" style="color:#E60012">Workcenter（注塑计划机台）</a></p>';
+  html += '<p style="color:#bdc3c7;font-size:11px;margin-top:32px">此邮件由' + _WS_MAINT_SENDER_NAME + '自动发送，请勿回复</p>';
+  html += '</div></div></body></html>';
+  return html;
+}
+
+// 发送编排：返回给 Log 摘要的片段；任何失败都自捕获，绝不影响同步结果
+function _ws_runMaintenanceReminder(headerRow, plan, trigger) {
+  try {
+    const cols = _ws_headerIndex(headerRow);
+    const missingHeaders = _WS_MAINT_HEADERS.filter(function (n) { return cols[n] === undefined; });
+    if (missingHeaders.length > 0) {
+      console.log("⚠️ 表头缺少人工列（" + missingHeaders.join(", ") + "），跳过维护提醒");
+      return " / 维护提醒跳过（表头缺 " + missingHeaders.join("/") + "）";
+    }
+
+    const pending = _ws_findMaintenancePending(cols, plan.matrix, new Set(plan.report.added));
+    if (pending.length === 0) return " / 待维护 0 台";
+
+    const isScheduled = trigger === "定时";
+    let to = [];
+    let cc = [];
+    if (isScheduled) {
+      const recipients = _ws_getMaintenanceRecipients();
+      to = recipients.to;
+      cc = recipients.cc;
+      if (to.length === 0) {
+        console.warn("维护提醒：无匹配收件人（工序=INJ、职位含 S&C），本次不发信");
+        return " / 待维护 " + pending.length + " 台（未发提醒：无收件人）";
+      }
+    } else {
+      to = [_ws_MAINT_OPERATOR_EMAIL];   // 手动运行只发操作者，防止调试时误发全员
+    }
+
+    const today = formatVariableAsDate(new Date());
+    const subject = "【机台主数据维护】 " + pending.length + " 台机台属性未补齐 - " + today;
+    const options = { htmlBody: _ws_buildMaintenanceEmailHtml(pending, today), name: _WS_MAINT_SENDER_NAME };
+    if (cc.length > 0) options.cc = cc.join(",");
+    GmailApp.sendEmail(to.join(","), subject, "", options);
+    console.log("维护提醒已发送: " + pending.length + " 台, TO=" + to.length + "人, CC=" + cc.length + "人");
+    return " / 待维护 " + pending.length + " 台（已提醒" + (isScheduled ? " TO " + to.length + "/CC " + cc.length : "·仅操作者") + "）";
+  } catch (err) {
+    console.error("维护提醒失败: " + err.message);
+    return " / 维护提醒失败（不影响同步）";
+  }
+}
+
+// 测试入口：只读生产表、只发操作者，可安全随时运行（不写任何数据）
+function testWorkcenterMaintenanceReminder() {
+  try {
+    const ws = SpreadsheetApp.openById(_ws_ID_EQU).getSheetByName(_ws_SHEET_EQU);
+    if (!ws) throw new Error("找不到工作表: " + _ws_SHEET_EQU);
+    const data = ws.getDataRange().getValues();
+    const cols = _ws_headerIndex(data[0]);
+    const missingHeaders = _WS_MAINT_HEADERS.filter(function (n) { return cols[n] === undefined; });
+    if (missingHeaders.length > 0) throw new Error("表头缺少字段: " + missingHeaders.join(", "));
+
+    const pending = _ws_findMaintenancePending(cols, data.slice(1), new Set());
+    if (pending.length === 0) {
+      console.log("测试入口：当前无待维护机台，不发信");
+      return;
+    }
+
+    const today = formatVariableAsDate(new Date());
+    const subject = "【机台主数据维护·测试】 " + pending.length + " 台机台属性未补齐 - " + today;
+    const html = _ws_buildMaintenanceEmailHtml(pending, today);
+    GmailApp.sendEmail(_ws_MAINT_OPERATOR_EMAIL, subject, "", { htmlBody: html, name: _WS_MAINT_SENDER_NAME });
+    console.log("测试邮件已发送: " + pending.length + " 台 → " + _ws_MAINT_OPERATOR_EMAIL);
+  } catch (err) {
+    console.log("❌ 测试入口错误: " + err.toString());
+  }
 }
 
 // ========== 写回 ==========

@@ -12,6 +12,7 @@ const code = fs.readFileSync(new URL('../12 - Workcenter数据同步.js', import
 
 const SS_PLAN = '11zyH65MhC-LuqsEXT6KeO3-GQ3jwW7z7kJjHD0TwLZc';
 const SS_EQU = '12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM';
+const SS_USER = '1F7G3WOY5xM4fEYZ1s5RKulY4kJhqCZ9HefthmiVkraM';
 
 // ===== GAS stub =====
 let logs = [];
@@ -27,6 +28,24 @@ globalThis.console = {
   warn: (...a) => consoleLines.push(a.join(' ')),
   error: (...a) => consoleLines.push(a.join(' ')),
 };
+
+// ===== 邮件与日期桩（Cycle 9 起同步末尾会发「机台主数据维护提醒」）=====
+// 模块依赖 01 - Common.js 的 buildHtmlTable/escapeHtml/formatVariableAsDate，
+// 但 Common.js 顶层会 SpreadsheetApp.openById()，在 Node 里跑不了，按需打桩。
+let mails = [];
+globalThis.GmailApp = {
+  sendEmail: (to, subject, body, options) => { mails.push({ to, subject, body, options }); },
+};
+globalThis.escapeHtml = str => String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+// 与 Common.js 同构的简化桩：内容经 escapeHtml；断言只做子串匹配，不做像素级 UI 校验
+globalThis.buildHtmlTable = function (headers, rows, headerBg) {
+  return '<table data-bg="' + headerBg + '"><tr>'
+    + headers.map(h => '<th>' + globalThis.escapeHtml(h) + '</th>').join('')
+    + '</tr>'
+    + rows.map(r => '<tr>' + r.map(c => '<td>' + globalThis.escapeHtml(String(c === undefined || c === null || c === '' ? '-' : c)) + '</td>').join('') + '</tr>').join('')
+    + '</table>';
+};
+globalThis.formatVariableAsDate = () => '2026-10-02';   // 固定日期，便于断言
 
 // 真 Sheets 的 getLastRow 会忽略全空行，fake 保持一致
 function lastNonEmptyRow(rows) {
@@ -137,9 +156,10 @@ function eamRow(equipmentNo, tag) {
   return row;
 }
 
-function setup({ workcenter = [], line = [], activeCell = null, eam = [], workcenterHeaders = WC_HEADERS } = {}) {
+function setup({ workcenter = [], line = [], activeCell = null, eam = [], workcenterHeaders = WC_HEADERS, userID = null } = {}) {
   logs = [];
   consoleLines = [];
+  mails = [];
   sheets = {};
   sheets[SS_PLAN] = {
     '1. Line Database': fakeSheet([LINE_HEADERS, ...line]),
@@ -151,6 +171,9 @@ function setup({ workcenter = [], line = [], activeCell = null, eam = [], workce
     'Workcenter': fakeSheet([workcenterHeaders, ...workcenter]),
     'Equipment_Number_EAM': fakeSheet([EAM_HEADERS, ...eam]),
   };
+  if (userID !== null) {
+    sheets[SS_USER] = { 'userID': fakeSheet(userID) };
+  }
 }
 
 function workcenterSheet() {
@@ -612,4 +635,294 @@ test('表头缺少必需字段 → 中止并记失败日志，不改动数据', 
 
   assert.equal(dataRows(workcenterSheet())[0][16], '甲', '数据未被改动');
   assert.ok(logs.some(l => l.status === '失败' && l.detail.includes('设备编号')), '失败日志点名字段');
+});
+
+// ===== Cycle 9：机台主数据维护提醒（M–R 人工列未补齐）=====
+// 判据：J≠NA 且以下六个人工列任一为空；S 是程序列、T 空是「需点检」的合法默认，都不参与判据
+const MAINT_HEADERS = ['机型', '设备类型1', '设备类型2', '自动化类型', '责任人', '备份责任人'];
+
+// ---- userID 表夹具：前两行为分组/字段表头（取样 userID!A1:R2），数据行取样自 2026-10-01 生产表 ----
+const USER_GROUP_ROW = ['SAPID328*****', '', '', '备件系统', '', 'Digital Process', '', '', 'AM Schedule', '', 'PK BOM', '', '', 'EDS', 'EDS', 'EDS', 'Quality', 'F'];
+const USER_HEADERS = ['SAPID', 'NAME', 'PWD', 'Approver-Process', 'Access', '车间', '工序', '权限', 'AM Schedule', 'GMail', 'BOM 上传', '技术部审批失效BOM', '审批类型', '车间', '工序', '职位', 'ROLE'];
+// 只填被读取的列（A/B/J/N/O/P），其余列与本用例无关
+function userRow(sapid, name, gmail, dept, proc, pos) {
+  const row = new Array(17).fill('');
+  row[0] = sapid; row[1] = name; row[9] = gmail; row[13] = dept; row[14] = proc; row[15] = pos;
+  return row;
+}
+const USER_FIXTURE = [
+  USER_GROUP_ROW,
+  USER_HEADERS,
+  userRow('66185', '卢少辉', 'andy_lu@colpal.com', 'TB2', 'INJ', 'S&C'),          // 取样 userID!A178
+  userRow('68680', '季勇', 'yong_ji@colpal.com', 'TB1', 'INJ', 'S&C'),            // 取样 userID!A184
+  userRow('69071', '沈毅', 'frank_shen_shen@colpal.com', 'ALL', 'INJ', 'S&C'),    // 取样 userID!A188
+  userRow('38416', '张俊', 'jin_zhang@colpal.com', 'TB1', 'INJ', 'IDL'),          // 取样 userID!A3
+  userRow('62564', '吴江峰', 'jiangfeng_wu@colpal.com', 'TB1', 'INJ', 'IDL'),     // 取样 userID!A66
+  userRow('68697', '刘元冬', 'yuandong_liu@colpal.com', 'TB2', 'TF', 'IDL'),      // 取样 userID!A73（工序 TF → 不进名单）
+  userRow('66284', '毛太林', '', 'TB1', 'INJ', 'IDL'),                            // 取样 userID!A39（无 GMail → 跳过）
+];
+
+// ---- 判据纯函数 _ws_findMaintenancePending ----
+test('维护提醒判据：新增机台（M–R 全空、J≠NA）→ 命中并缺六列', () => {
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [wcRow({ 'Workcenter': 'M9', 'Machine Type': 'FT400', 'Final Machine Type': 'FT400', '是否主设备': 'N' })];
+  assert.deepEqual(
+    globalThis._ws_findMaintenancePending(cols, matrix, new Set(['M9'])),
+    [{ workcenter: 'M9', missing: MAINT_HEADERS, isNew: true }]);
+});
+
+test('维护提醒判据：J=NA（报废/闲置）→ 不进名单', () => {
+  // 取样 Workcenter：V1FTA553（J=NA、机型组空）；H1HTB658（机器性能=机器闲置，机台号报废，已维护）
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [
+    wcRow({ 'Workcenter': 'V1FTA553', 'Final Machine Type': 'NA', '工艺无需检查Y/N': 'Y', '点检无需检查Y/N': 'Y' }),
+    wcRow({
+      'Workcenter': 'H1HTB658', 'Final Machine Type': 'NA', '机型': '6AX', '设备类型1': 'VIM',
+      '设备类型2': 'NA', '自动化类型': 'NA', '工艺无需检查Y/N': 'Y', '点检无需检查Y/N': 'Y',
+    }),
+  ];
+  assert.deepEqual(globalThis._ws_findMaintenancePending(cols, matrix, new Set()), []);
+});
+
+test('维护提醒判据：缺责任人/备份责任人（V1FTA701 真实行）→ 命中两列', () => {
+  // 取样 Workcenter：V1FTA701（J=6AX、K=N、机型 VIM/VIM/NA/NA、S=T=Y，责任人列为空）
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [wcRow({
+    'Workcenter': 'V1FTA701', 'Machine Type': 'FT400', '机器性能': '6AX', 'New Formed Cell': 'H1HTA755',
+    'Final Machine Type': '6AX', '是否主设备': 'N', '设备编号': '10139954',
+    '机型': 'VIM', '设备类型1': 'VIM', '设备类型2': 'NA', '自动化类型': 'NA',
+    '工艺无需检查Y/N': 'Y', '点检无需检查Y/N': 'Y',
+  })];
+  assert.deepEqual(
+    globalThis._ws_findMaintenancePending(cols, matrix, new Set()),
+    [{ workcenter: 'V1FTA701', missing: ['责任人', '备份责任人'], isNew: false }]);
+});
+
+test('维护提醒判据：缺机型组（H2HTA362 真实行）→ 命中四列', () => {
+  // 取样 Workcenter：H2HTA362（J=3AX、K=Y，机型组四列为空、责任人已维护）
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [wcRow({
+    'Workcenter': 'H2HTA362', 'Machine Type': 'HT160 3X', '机器性能': '3AX', 'New Formed Cell': 'H2HTA362',
+    'Final Machine Type': '3AX', '是否主设备': 'Y', '设备编号': '10132392',
+    '责任人': '束伍魁', '备份责任人': '乔巨欢',
+  })];
+  assert.deepEqual(
+    globalThis._ws_findMaintenancePending(cols, matrix, new Set()),
+    [{ workcenter: 'H2HTA362', missing: ['机型', '设备类型1', '设备类型2', '自动化类型'], isNew: false }]);
+});
+
+test('维护提醒判据：六列齐全 → 不命中；S/T 的值与判据无关', () => {
+  // 取样 Workcenter：S1HS0001（六列齐全，S 空、T=Y）；第二条 T=Y 且 S=Y（双免检）同样六列齐全
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [
+    wcRow({
+      'Workcenter': 'S1HS0001', 'Final Machine Type': 'HS', '机型': 'HS', '设备类型1': 'HS',
+      '设备类型2': 'NA', '自动化类型': 'NA', '责任人': '游臣', '备份责任人': '吴江峰', '点检无需检查Y/N': 'Y',
+    }),
+    wcRow({
+      'Workcenter': 'S2HS0003', 'Final Machine Type': 'HS', '机型': 'HS', '设备类型1': 'HS',
+      '设备类型2': 'NA', '自动化类型': 'NA', '责任人': '杨杨', '备份责任人': '乔军',
+      '工艺无需检查Y/N': 'Y', '点检无需检查Y/N': 'Y',
+    }),
+  ];
+  assert.deepEqual(globalThis._ws_findMaintenancePending(cols, matrix, new Set()), []);
+});
+
+test('维护提醒判据：空白串（含空格）视为未维护', () => {
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [wcRow({
+    'Workcenter': 'M1', 'Final Machine Type': 'HT160', '机型': '  ',
+    '设备类型1': 'HS', '设备类型2': 'NA', '自动化类型': 'NA', '责任人': '甲', '备份责任人': '乙',
+  })];
+  assert.deepEqual(
+    globalThis._ws_findMaintenancePending(cols, matrix, new Set()),
+    [{ workcenter: 'M1', missing: ['机型'], isNew: false }]);
+});
+
+test('维护提醒判据：重复机台号只报第一条', () => {
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [
+    wcRow({ 'Workcenter': 'M1', 'Final Machine Type': 'HT160' }),   // 全空 → 命中
+    wcRow({ 'Workcenter': 'M1', 'Final Machine Type': 'HT160', '责任人': '甲' }),
+  ];
+  const pending = globalThis._ws_findMaintenancePending(cols, matrix, new Set());
+  assert.equal(pending.length, 1, '同号只报一次');
+  assert.equal(pending[0].workcenter, 'M1');
+});
+
+test('维护提醒判据：addedSet 决定 isNew 标记', () => {
+  const cols = globalThis._ws_headerIndex(WC_HEADERS);
+  const matrix = [wcRow({ 'Workcenter': 'M1', 'Final Machine Type': 'HT160' })];
+  assert.equal(globalThis._ws_findMaintenancePending(cols, matrix, new Set(['M1']))[0].isNew, true);
+  assert.equal(globalThis._ws_findMaintenancePending(cols, matrix, new Set(['OTHER']))[0].isNew, false);
+});
+
+// ---- 收件人纯函数 _ws_parseMaintenanceRecipients ----
+test('维护提醒收件人：INJ S&C → TO；INJ IDL → CC；非 INJ 与无邮箱跳过', () => {
+  const r = globalThis._ws_parseMaintenanceRecipients(USER_FIXTURE);
+  assert.deepEqual(r.to, ['andy_lu@colpal.com', 'yong_ji@colpal.com', 'frank_shen_shen@colpal.com']);
+  assert.deepEqual(r.cc, ['jin_zhang@colpal.com', 'jiangfeng_wu@colpal.com']);
+});
+
+test('维护提醒收件人：职位大小写与空格归一（S&C/s&c 同效；工序 trim 后精确匹配 INJ）', () => {
+  const rows = [
+    USER_GROUP_ROW, USER_HEADERS,
+    userRow('66185', '卢少辉', 'andy_lu@colpal.com', 'TB2', 'INJ', ' s&c '),   // 职位变体（大小写/空格）
+    userRow('38416', '张俊', 'jin_zhang@colpal.com', 'TB1', ' INJ ', 'idl'),   // 工序带空格 + 职位小写
+  ];
+  const r = globalThis._ws_parseMaintenanceRecipients(rows);
+  assert.deepEqual(r.to, ['andy_lu@colpal.com']);
+  assert.deepEqual(r.cc, ['jin_zhang@colpal.com']);
+});
+
+test('维护提醒收件人：重复邮箱去重、空表返回空名单', () => {
+  const rows = [
+    USER_GROUP_ROW, USER_HEADERS,
+    userRow('66185', '卢少辉', 'andy_lu@colpal.com', 'TB2', 'INJ', 'S&C'),
+    userRow('66185', '卢少辉', 'andy_lu@colpal.com', 'TB2', 'INJ', 'S&C'),     // 同人重复行
+  ];
+  assert.deepEqual(globalThis._ws_parseMaintenanceRecipients(rows).to, ['andy_lu@colpal.com']);
+  assert.deepEqual(globalThis._ws_parseMaintenanceRecipients([USER_GROUP_ROW, USER_HEADERS]), { to: [], cc: [] });
+});
+
+// ---- 邮件 HTML 纯函数 _ws_buildMaintenanceEmailHtml ----
+const PENDING_FIXTURE = [
+  { workcenter: 'V1FTA701', missing: ['责任人', '备份责任人'], isNew: true },
+  { workcenter: 'H2HTA362', missing: ['机型', '设备类型1', '设备类型2', '自动化类型'], isNew: false },
+];
+
+test('维护提醒邮件：含机台号、缺失字段、新增/待补齐标记、车间与两个链接', () => {
+  const html = globalThis._ws_buildMaintenanceEmailHtml(PENDING_FIXTURE, '2026-10-02');
+  assert.ok(html.includes('V1FTA701'));
+  assert.ok(html.includes('H2HTA362'));
+  assert.ok(html.includes('责任人、备份责任人'));
+  assert.ok(html.includes('机型、设备类型1、设备类型2、自动化类型'));
+  assert.ok(html.includes('本次新增'));
+  assert.ok(html.includes('待补齐'));
+  assert.ok(html.includes('2 台'));
+  assert.ok(html.includes('TB1'));
+  assert.ok(html.includes('TB2'));
+  assert.ok(html.includes('2026-10-02'));
+  assert.ok(html.includes('https://script.google.com/a/colpal.com/macros/s/AKfycbyaQjG5yFGYxU825DrODhSLl2bdfbYKpqAH4qOIzKoTJ4b-5qU/exec?v=INJ_MachineMaster'), 'EDS 维护页链接');
+  assert.ok(html.includes('https://docs.google.com/spreadsheets/d/12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM/edit#gid=0'), 'Workcenter 表链接');
+});
+
+test('维护提醒邮件：机台号经 HTML 转义', () => {
+  const html = globalThis._ws_buildMaintenanceEmailHtml([{ workcenter: 'A<b>', missing: ['机型'], isNew: false }], '2026-10-02');
+  assert.ok(html.includes('A&lt;b&gt;'));
+  assert.ok(!html.includes('A<b>'));
+});
+
+// ---- 同步集成：发送时机与收件人 ----
+function pendingSetup(extra = {}) {
+  setup({
+    line: [lineRow('M1', 'HT160', '', 'C1'), lineRow('M9', 'FT400', '', 'C9')],
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],
+    workcenter: [wcRow({
+      'Workcenter': 'M1', '机型': 'HS', '设备类型1': 'HS', '设备类型2': 'NA', '自动化类型': 'NA',
+      '责任人': '游臣', '备份责任人': '吴江峰',
+    })],
+    userID: USER_FIXTURE,
+    ...extra,
+  });
+}
+
+test('维护提醒（定时）：发真实收件人 TO=S&C、CC=IDL，正文只列未补齐机台', () => {
+  pendingSetup();
+
+  globalThis.syncWorkcenterData({ triggerType: 'scheduled' });   // 有事件对象 = 定时
+
+  assert.equal(mails.length, 1, '发了一封');
+  const mail = mails[0];
+  assert.equal(mail.to, 'andy_lu@colpal.com,yong_ji@colpal.com,frank_shen_shen@colpal.com');
+  assert.equal(mail.options.cc, 'jin_zhang@colpal.com,jiangfeng_wu@colpal.com');
+  assert.ok(mail.subject.includes('【机台主数据维护】'));
+  assert.ok(mail.subject.includes('1 台'));
+  assert.ok(mail.subject.includes('2026-10-02'));
+  assert.ok(mail.options.htmlBody.includes('M9'), '新增机台在名单里');
+  assert.ok(!mail.options.htmlBody.includes('M1'), 'M1 六列齐全，不进名单');
+  assert.equal(mail.options.name, '机台主数据维护提醒');
+});
+
+test('维护提醒（手动）：只发操作者，不带 CC，防止调试时误发全员', () => {
+  pendingSetup();
+
+  globalThis.syncWorkcenterData();   // 无事件对象 = 手动
+
+  assert.equal(mails.length, 1);
+  assert.equal(mails[0].to, 'kelland_zhao@colpal.com');
+  assert.equal(mails[0].options.cc, undefined);
+});
+
+test('维护提醒：无待维护机台 → 不发信', () => {
+  setup({
+    line: [lineRow('M1', 'HT160', '', 'C1')],
+    workcenter: [wcRow({
+      'Workcenter': 'M1', '机型': 'HS', '设备类型1': 'HS', '设备类型2': 'NA', '自动化类型': 'NA',
+      '责任人': '游臣', '备份责任人': '吴江峰',
+    })],
+    userID: USER_FIXTURE,
+  });
+
+  globalThis.syncWorkcenterData({ triggerType: 'scheduled' });
+
+  assert.equal(mails.length, 0);
+});
+
+test('维护提醒（定时）：收件人读不到 → 不发信、有告警，同步照常成功', () => {
+  setup({
+    line: [lineRow('M9', 'FT400', '', 'C9')],
+    workcenter: [],
+  });   // 不注册 userID 表
+
+  globalThis.syncWorkcenterData({ triggerType: 'scheduled' });
+
+  assert.equal(mails.length, 0);
+  assert.ok(consoleLines.some(l => l.includes('收件人')), '有收件人告警');
+  assert.ok(logs.some(l => l.status === '成功'), '同步仍成功');
+});
+
+test('维护提醒：同步被安全阀中止 → 不发信', () => {
+  setup({
+    line: [],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+    userID: USER_FIXTURE,
+  });
+
+  globalThis.syncWorkcenterData({ triggerType: 'scheduled' });
+
+  assert.equal(mails.length, 0);
+});
+
+test('维护提醒：发信抛错不影响同步结果，摘要里注明失败', () => {
+  setup({
+    line: [lineRow('M9', 'FT400', '', 'C9')],
+    workcenter: [],
+    userID: USER_FIXTURE,
+  });
+  const orig = globalThis.GmailApp.sendEmail;
+  globalThis.GmailApp.sendEmail = () => { throw new Error('quota exceeded'); };
+  try {
+    globalThis.syncWorkcenterData({ triggerType: 'scheduled' });
+  } finally {
+    globalThis.GmailApp.sendEmail = orig;
+  }
+
+  assert.ok(logs.some(l => l.status === '成功' && l.detail.includes('维护提醒失败')), '主日志仍成功并注明提醒失败');
+  assert.ok(consoleLines.some(l => l.includes('quota exceeded')));
+});
+
+test('维护提醒：手动测试入口只读生产表、只发操作者', () => {
+  setup({
+    workcenter: [
+      wcRow({ 'Workcenter': 'V1FTA701', 'Final Machine Type': '6AX', '机型': 'VIM', '设备类型1': 'VIM', '设备类型2': 'NA', '自动化类型': 'NA' }),
+    ],
+  });
+
+  globalThis.testWorkcenterMaintenanceReminder();
+
+  assert.equal(mails.length, 1);
+  assert.equal(mails[0].to, 'kelland_zhao@colpal.com');
+  assert.ok(mails[0].subject.includes('测试'));
+  assert.ok(mails[0].options.htmlBody.includes('V1FTA701'));
 });
