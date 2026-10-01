@@ -414,6 +414,39 @@ test('工艺无需检查：其他机型 → 留空', () => {
   }), '');
 });
 
+// 第三条判据：D=H2HTB363 且 K=N —— 绑在 D 列单元格上的一次性豁免
+test('工艺无需检查：D=H2HTB363 且 K=N → Y（一次性单元格豁免）', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'HT160', '', 'H2HTB363')],
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],  // M1 不在 Active Cell → K=N
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'Y');
+});
+
+test('工艺无需检查：D=H2HTB363 但 K=Y（是主设备）→ 留空（豁免只给非主设备）', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'HT160', '', 'H2HTB363')],
+    activeCell: [cellRow('M1', '', '', '', '', '')],    // M1 在 Active Cell → K=Y
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), '');
+});
+
+test('工艺无需检查：D=H2HTB363X（近似值）且 K=N → 留空（只认精确匹配）', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'HT160', '', 'H2HTB363X')],
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), '');
+});
+
+test('工艺无需检查：D 为 H2HTB363 且带首尾空格、K=N → Y（trim 后精确匹配）', () => {
+  assert.equal(sOf({
+    line: [lineRow('M1', 'HT160', '', '  H2HTB363  ')],
+    activeCell: [cellRow('OTHER', '', '', '', '', '')],
+    workcenter: [wcRow({ 'Workcenter': 'M1' })],
+  }), 'Y');
+});
+
 test('工艺无需检查：S 列归程序管，人工改的值会被重算覆盖', () => {
   assert.equal(sOf({
     line: [lineRow('M1', 'HT160', '', 'C1')],           // J=HT160 → 非免检

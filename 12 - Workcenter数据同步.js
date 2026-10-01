@@ -1,6 +1,6 @@
 // V20260930.02 — Workcenter 数据同步（Line Database → Workcenter，按 Workcenter 键的行级同步）
 // 入口：syncWorkcenterData（每日 08:20 定时 or 手动）
-// 逻辑：以 Workcenter 为键就地更新 A–L 共 12 个程序列，M–S 共 7 个人工列一律不碰
+// 逻辑：以 Workcenter 为键就地更新 A–L 与 S（工艺无需检查Y/N）共 13 个程序列，M–R 与 T（点检无需检查Y/N）共 7 个人工列一律不碰
 //   · A/B/C/D/J/L ← 1. Line Database 机台 + Equipment_Number_EAM 设备编号
 //   · E–I ← 2. Active Cell 的 M–Q，键为 D 列 New Formed Cell
 //   · K 是否主设备 ← 机台号出现在 2. Active Cell 的 D 列即为 Y，否则 N
@@ -317,13 +317,19 @@ function _ws_buildRow(row, width, machine, ctx) {
     }
   }
 
-  // 工艺无需检查Y/N：6AX 且非主设备，或已退役（NA）→ Y；其余留空
-  // 由 J/K 派生，所以放在最后算，取的是本行最终值
+  // 工艺无需检查Y/N：三条判据命中任一即 Y，否则留空
+  //   1) Final Machine Type=6AX 且非主设备  2) Final Machine Type=NA（已退役）
+  //   3) D=H2HTB363 且非主设备（下述一次性豁免）
+  // 由 J/K/D 派生，所以放在最后算，取的是本行最终值
   // 紧邻的「点检无需检查Y/N」是人工维护列：不在 _WS_MANAGED_HEADERS 里，
   // 行重写时靠基础行整行带过来，本模块一律不写（见 tests/workcenter-sync.test.mjs 保留用例）
   const finalType = _ws_cellText(out[cols["Final Machine Type"]]);
   const isMain = _ws_cellText(out[cols["是否主设备"]]);
-  out[cols["工艺无需检查Y/N"]] = ((finalType === "6AX" && isMain === "N") || finalType === "NA") ? "Y" : "";
+  // 一次性豁免（仅 H2HTB363）：判据绑在 New Formed Cell 这个单元格上、而非机台号名单，
+  // 机台进出该单元格时自动跟随，不会像硬编码的机台号那样过期
+  const cellExempt = _ws_cellText(out[cols["New Formed Cell"]]) === "H2HTB363" && isMain === "N";
+  out[cols["工艺无需检查Y/N"]] =
+    ((finalType === "6AX" && isMain === "N") || finalType === "NA" || cellExempt) ? "Y" : "";
 
   return out;
 }
