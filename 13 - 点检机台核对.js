@@ -375,6 +375,19 @@ function _pc_run(isScheduled, opts) {
     console.log("追加 " + plan.append.length + " 台 / 删除 " + plan.toDelete.length + " 台 / 仅报告 " + plan.plasmaKept.length + " 台");
     if (!valve.ok) console.warn("安全阀: " + valve.reason);
 
+    // 收件人前置（spec §7.5）：必须早于写入 —— 写库不可逆，若等删除/追加做完了
+    // 才发现没有收件人，本轮就是一次「没有任何通知的静默改动」（旧顺序正是如此，
+    // 且 Log 只记「跳过」，看上去像什么都没发生）。收件人读不到（权限表配置错、
+    // 读表异常；_pc_getRecipients 吞异常返回 []）时停在写入之前，一个字节都不写
+    const recipients = _pc_getRecipients();
+    if (recipients.length === 0) {
+      writeLog("checkPointCheckMachines", "跳过",
+        "无匹配收件人(O=INJ,P=S&C): TO=0人，本轮未写入（计划追加" + plan.append.length
+        + "台/删除" + plan.toDelete.length + "台）", trigger, "");
+      console.warn("未找到匹配收件人，本轮未写入");
+      return;
+    }
+
     // 5-8. 写入与标黄
     // 待补全必须取**写入后**的状态：当天新追加的行机型/点检人为空，
     // 若沿用写入前的 injRows，这些行要到次日才进「待补全」区块，
@@ -405,19 +418,13 @@ function _pc_run(isScheduled, opts) {
       dryRun: dryRun,
     };
 
-    const recipients = _pc_getRecipients();
-    if (recipients.length === 0) {
-      writeLog("checkPointCheckMachines", "跳过", "无匹配收件人(O=INJ,P=S&C)", trigger, "");
-      console.warn("未找到匹配收件人");
-      return;
-    }
-
     const today = formatVariableAsDate(new Date());
     const subject = "【点检同步】 注塑机台差异报告 " + today;
     const html = _pc_buildEmailHtml(result, today);
 
-    // 删除快照写进 Log，邮件会过期、快照是唯一的恢复依据
-    const snapshotJson = JSON.stringify(result.deleted.map(function (d) {
+    // 删除快照写进 Log，邮件会过期、快照是唯一的恢复依据。
+    // 预演没有任何行被删 —— 把「删除快照」写进 Log 会让人以为已删，故不写
+    const snapshotJson = dryRun ? "" : JSON.stringify(result.deleted.map(function (d) {
       return { machineNo: d.machineNo, reason: d.reason, rows: d.snapshot };
     }));
 
@@ -425,7 +432,8 @@ function _pc_run(isScheduled, opts) {
       _pc_sendMail(recipients.join(","), subject, html);
       const summary = "追加=" + plan.append.length + "台, 删除="
         + (valve.ok ? plan.toDelete.length + "台" : "0台(计划" + plan.toDelete.length + "台被安全阀拦下)")
-        + ", 待补全=" + incomplete.length + "行, TO=" + recipients.length + "人";
+        + ", 待补全=" + incomplete.length + "行, TO=" + recipients.length + "人"
+        + (dryRun ? " (预演未写入)" : "");   // 预演什么都没写，摘要必须说实话
       writeLog("checkPointCheckMachines", "成功", summary, trigger, snapshotJson);
       console.log("邮件发送成功: " + summary);
     } catch (err) {
@@ -626,8 +634,15 @@ function _pc_buildEmailHtml(result, today) {
 
   // ===== 本次追加 =====
   if (result.append.length > 0) {
-    html += _pc_section("本次追加：" + result.append.length + " 台");
-    html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">⚠ 新机台的「机型」「点检人」为空白，请人工补齐（补齐前该行在点检表中标黄）</p>';
+    // 与删除区块同一套标题句式（计划 vs 本次）：预演一行都没写，标题必须说「计划」
+    const addTitle = result.dryRun ? "计划追加：" + result.append.length + " 台（预演未写入）"
+      : "本次追加：" + result.append.length + " 台";
+    html += _pc_section(addTitle);
+    if (result.dryRun) {
+      html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">以下机台<b>尚未追加</b>（预演未写入）。确认无误后手动运行 checkPointCheckMachines 执行；写入后该行「机型」「点检人」为空，将在点检表中标黄待补全</p>';
+    } else {
+      html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">⚠ 新机台的「机型」「点检人」为空白，请人工补齐（补齐前该行在点检表中标黄）</p>';
+    }
     html += buildHtmlTable(
       ["机台号", "车间", "状态"],
       result.append.map(function (r) {

@@ -469,6 +469,19 @@ test('预演模式：状态列不说谎，追加/删除都标「预演未写入�
   assert.doesNotMatch(html, /已添加/, '预演什么都没写，说「已添加」就是谎报');
 });
 
+test('预演模式：追加区块也标「计划追加·预演未写入」，不冒充已写入', () => {
+  // 预演的追加行一行都没写、也没标黄；区块若沿用「本次追加 + 请人工补齐」，
+  // 读邮件的人会以为表里已经有这些行（删除区块早就是三态标题，追加区块当时漏了）
+  const html = globalThis._pc_buildEmailHtml(emptyResult({
+    dryRun: true,
+    append: [{ machineNo: 'E0EN0001', workshop: 'TB1' }],
+  }), '2026-09-30');
+
+  assert.match(html, /计划追加：1 台（预演未写入）/, '标题要说明这一台只是计划');
+  assert.doesNotMatch(html, /本次追加/, '预演没有任何行写入，不能说「本次追加」');
+  assert.doesNotMatch(html, /请人工补齐/, '预演未写入也未标黄，不能按已写入的口气要求补齐');
+});
+
 test('两侧一致且无待补全 → 报告无差异', () => {
   const html = globalThis._pc_buildEmailHtml(emptyResult(), '2026-09-30');
   assert.match(html, /无差异|完全一致/);
