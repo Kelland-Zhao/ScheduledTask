@@ -202,6 +202,41 @@ test('安全阀计数单位是机台数不是行数', () => {
   assert.equal(globalThis._pc_shouldDelete(plan.toDelete.length, false).ok, true);
 });
 
+// —— _pc_mergeDeleteRuns：把任意顺序的 1-based 行号合并成 deleteRows 用的连续区间 ——
+// 这是全模块唯一会「删错行」的一步：段内行号必须连续（非目标行天然把段断开），
+// 段必须按 start 从大到小返回 —— 删除会让下方行号上移，先删大行号才不会错位
+test('删除区间合并：空输入 → []', () => {
+  assert.deepEqual(globalThis._pc_mergeDeleteRuns([]), [], '不能无条件读 targets[0]');
+});
+
+test('删除区间合并：单行 → 一段', () => {
+  assert.deepEqual(globalThis._pc_mergeDeleteRuns([7]), [{ start: 7, count: 1 }]);
+});
+
+test('删除区间合并：连续行合成一段', () => {
+  // 真实形态：MachineList!A1051:E1053 连着三行都要删（同机多行或相邻两台）
+  assert.deepEqual(globalThis._pc_mergeDeleteRuns([1051, 1052, 1053]), [{ start: 1051, count: 3 }]);
+});
+
+test('删除区间合并：两段有间隔 → 两段，start 大的在前', () => {
+  // 间隔里是没被删的行（其他机台或非 INJ 行），段不能跨过去
+  assert.deepEqual(globalThis._pc_mergeDeleteRuns([1051, 1052, 1053, 1058]), [
+    { start: 1058, count: 1 },
+    { start: 1051, count: 3 },
+  ], '先删 1058 再删 1051-1053，行号不会错位');
+});
+
+test('删除区间合并：乱序输入与有序结果一致', () => {
+  assert.deepEqual(globalThis._pc_mergeDeleteRuns([1058, 1051, 1053, 1052]), [
+    { start: 1058, count: 1 },
+    { start: 1051, count: 3 },
+  ]);
+});
+
+test('删除区间合并：重复行号只算一次（否则 count 会多圈进相邻行）', () => {
+  assert.deepEqual(globalThis._pc_mergeDeleteRuns([1051, 1051, 1052]), [{ start: 1051, count: 2 }]);
+});
+
 test('待补全判定：机型或点检人为空', () => {
   assert.equal(globalThis._pc_isIncomplete(mlRow('INJ', 'TB2', '6AX', 'H2HTA520', 'OPC')), false);
   assert.equal(globalThis._pc_isIncomplete(mlRow('INJ', 'TB2', '', 'H2HTA520', 'OPC')), true, '机型空');

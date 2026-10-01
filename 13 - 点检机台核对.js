@@ -371,7 +371,7 @@ function _pc_run(isScheduled, opts) {
         return { machineNo: a.machineNo, rowData: [_pc_FILTER_PROCESS, a.workshop, "", a.machineNo, ""] };
       }));
     } else {
-      incomplete = _pc_executePlan(wsML, dataML, plan, valve, injRows).incomplete;
+      incomplete = _pc_executePlan(wsML, plan, valve).incomplete;
     }
 
     // 9. 邮件
@@ -428,29 +428,50 @@ function _pc_run(isScheduled, opts) {
 }
 
 /**
+ * 把任意顺序的 1-based 行号合并成连续区间，供 ws.deleteRows(start, count) 批量删除。
+ * 纯函数，单独提出是因为这是全模块唯一会「删错行」的一步，必须能被测试。
+ * **段按 start 从大到小返回**：删除会让下方行号上移，先删大行号才不会让后续区间错位。
+ * 段内行号严格连续 —— 没被删的行（其他机台/非 INJ 行）会把段自然断开，不会被卷进删除。
+ * @param {Array<number>} targets 1-based 行号，顺序任意；重复值只算一次
+ * @returns {Array<{start: number, count: number}>} start 为 1-based，start 大的在前
+ */
+function _pc_mergeDeleteRuns(targets) {
+  if (!targets || targets.length === 0) return [];
+
+  const sorted = targets.slice().sort(function (a, b) { return b - a; });   // 降序
+  const runs = [];
+  let start = sorted[0];
+  let count = 1;
+
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i] === sorted[i - 1]) continue;              // 重复行号只算一次
+    if (sorted[i] === start - count) {                      // 与当前段下端相邻 → 并入
+      count++;
+      continue;
+    }
+    runs.push({ start: start - count + 1, count: count });
+    start = sorted[i];
+    count = 1;
+  }
+  runs.push({ start: start - count + 1, count: count });
+  return runs;
+}
+
+/**
  * 执行写入：删除 → 追加 → 重新读背景 → 标黄
  * 安全不变量：工序 ≠ INJ 的行，值和背景色一律不写入
  * @returns {{incomplete: Array}} 写入后仍待补全的行（含刚刚追加的，它们天然机型/点检人为空）
  */
-function _pc_executePlan(wsML, dataML, plan, valve, injRows) {
+function _pc_executePlan(wsML, plan, valve) {
   const deleted = valve.ok ? plan.toDelete : [];
 
   // ---- 删除：按连续行号区间批量 deleteRows（只含 INJ 行）----
   if (deleted.length > 0) {
     const targets = [];
     deleted.forEach(function (d) { d.rowIndexes.forEach(function (r) { targets.push(r); }); });
-    targets.sort(function (a, b) { return b - a; });   // 从大到小删，避免行号移位
-
-    let runStart = targets[0];
-    let runCount = 1;
-    for (let i = 1; i <= targets.length; i++) {
-      if (i < targets.length && targets[i] === runStart - runCount) {
-        runCount++;
-      } else {
-        wsML.deleteRows(runStart - runCount + 1, runCount);
-        if (i < targets.length) { runStart = targets[i]; runCount = 1; }
-      }
-    }
+    _pc_mergeDeleteRuns(targets).forEach(function (run) {
+      wsML.deleteRows(run.start, run.count);
+    });
     console.log("已删除 " + deleted.length + " 台机台，共 " + targets.length + " 行");
   }
 
