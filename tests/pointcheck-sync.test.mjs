@@ -53,6 +53,39 @@ const builtWith = (machines, flagged) => ({
   included: machines, flagged: flagged || {}, missing: [], duplicates: [], badFlags: [],
 });
 
+// —— Workcenter 最小表头 fixture（按表头名定位，只需 4 个必需列）——
+// 行值取自生产表真实机台号；仅大小写/空格做变体，用于锁 spec §3.3/§12 的「写入形态」
+const WC_HEADERS_MIN = ['Workcenter', 'Machine Type', 'Final Machine Type', '无需检查Y/N'];
+const wcRow = (no, flag) => [no, 'HT160', '6AX', flag || ''];
+
+test('追加写入表11 原值：仅 trim，保留大小写（spec §3.3/§12）', () => {
+  // 生产表 328 行 Workcenter 当前恰好都是大写无空格，这里取真实机台号 V2FTA164
+  // （spec §14.1 取样）的「空格 + 小写」变体 —— 锁的是**写入形态**：
+  // 比对键归一，但落到 D 列的值必须是表11 原值（仅 trim）。
+  // 若回归成写归一值（V2FTA164 这类大写形态），只有本用例会红。
+  const built = globalThis._pc_buildIncludedSet([WC_HEADERS_MIN, wcRow(' v2fta164 ')]);
+  const plan = globalThis._pc_computeSyncPlan(
+    [{ rowIndex: 1058, machineNo: 'V1FTA958', rowData: mlRow('INJ', 'TB1', 'OMNI', 'V1FTA958', '技术员') }],
+    built);
+
+  assert.deepEqual(plan.append, [{ machineNo: 'v2fta164', workshop: 'TB2' }]);
+});
+
+test('比对仍用归一值：表11 原值含空格/小写也能与 MachineList 对上，不追加不删除', () => {
+  // 与上一条互为约束：写入用原值，**比对**仍必须用归一值，
+  // 否则同一台机会因为大小写/空格差异被误判成「两侧都没有」→ 被追加一份、删除原行
+  const built = globalThis._pc_buildIncludedSet([
+    WC_HEADERS_MIN,
+    wcRow(' h2fcs506 '),    // MachineList 里是 H2FCS506（两行，真实取样 A1051:E1052）
+    wcRow(' H2HTA520'),
+    wcRow('v1fta958'),
+  ]);
+  const plan = globalThis._pc_computeSyncPlan(INJ_ROWS_FIXTURE, built);
+
+  assert.deepEqual(plan.append, [], '归一后两侧都有 → 不追加');
+  assert.deepEqual(plan.toDelete, [], '归一后两侧都有 → 不删除');
+});
+
 test('同机台号多行：整组一起删除，snapshot 含全部行', () => {
   const plan = globalThis._pc_computeSyncPlan(
     INJ_ROWS_FIXTURE,

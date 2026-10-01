@@ -2,7 +2,7 @@
 // 入口：checkPointCheckMachines（每日 08:25 定时 or 手动，手动绕过安全阀）
 // 预演：dryRunPointCheckSync（只报告不写入）
 // 逻辑：纳入集 = Workcenter 全部行 − (「无需检查Y/N」= Y)
-//       纳入集有/MachineList-INJ 无 → 追加到表尾（工序=INJ，车间按第2位推，机型/点检人留空）
+//       纳入集有/MachineList-INJ 无 → 追加到表尾（工序=INJ，机台号用表11 原值仅trim，车间按第2位推，机型/点检人留空）
 //       MachineList-INJ 有/纳入集无 → 删除该机台号全部 INJ 行（Plasma 机型豁免）
 //       安全阀：拟删 > 10 台 → 只报告不删；手动运行绕过
 // 安全不变量：工序 ≠ INJ 的行，值和背景色一律不写入
@@ -86,6 +86,7 @@ function _pc_normalizeMachineNo(value) {
  * 纳入集 = 全部行 − (「无需检查Y/N」= Y)；判据按表头名定位列
  * @param {Array<Array>} dataWC getDataRange().getValues() 全量（含表头行）
  * @returns {{included: Object, flagged: Object, missing: Array<string>, duplicates: Array<string>, badFlags: Array<string>}}
+ *   included[machineNo] = {machineType, machineModel, rawNo}；rawNo 为表11 原值仅 trim（写入用，比对用键）
  *   missing 非空时调用方应跳过，不要用空 included 继续
  */
 function _pc_buildIncludedSet(dataWC) {
@@ -100,7 +101,8 @@ function _pc_buildIncludedSet(dataWC) {
   const badFlags = [];
 
   for (let i = 1; i < dataWC.length; i++) {
-    const machineNo = _pc_normalizeMachineNo(dataWC[i][cols[_pc_HEADER_WORKCENTER]]);
+    const cellNo = dataWC[i][cols[_pc_HEADER_WORKCENTER]];
+    const machineNo = _pc_normalizeMachineNo(cellNo);
     if (!machineNo) continue;
 
     const rawFlag = String(dataWC[i][cols[_pc_HEADER_FLAG]] || "").trim();
@@ -130,6 +132,8 @@ function _pc_buildIncludedSet(dataWC) {
     included[machineNo] = {
       machineType: String(dataWC[i][cols[_pc_HEADER_MACHINE_TYPE]] || "").trim(),
       machineModel: String(dataWC[i][cols[_pc_HEADER_FINAL_TYPE]] || "").trim(),
+      // 写入主数据时用原值：仅 trim、保留大小写（spec §3.3/§12）；比对键仍是上面的归一值
+      rawNo: cellNo === undefined || cellNo === null ? "" : String(cellNo).trim(),
     };
   }
 
@@ -204,7 +208,12 @@ function _pc_computeSyncPlan(injRows, built) {
   const append = [];
   Object.keys(included).forEach(function (no) {
     if (Object.prototype.hasOwnProperty.call(mlGroups, no)) return;
-    append.push({ machineNo: no, workshop: _pc_deriveWorkshop(no) });
+    append.push({
+      // 写进主数据的机台号取表11 原值（仅 trim，保留大小写）；归一值只用于比对。
+      // rawNo 缺失时（如手工构造的 built）回落到归一键，与 v1 行为一致
+      machineNo: (included[no] && included[no].rawNo) || no,
+      workshop: _pc_deriveWorkshop(no),
+    });
   });
 
   return { append: append, toDelete: toDelete, plasmaKept: plasmaKept };
