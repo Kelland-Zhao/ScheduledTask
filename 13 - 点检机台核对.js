@@ -588,7 +588,8 @@ function _pc_buildEmailHtml(result, today) {
   html += '</tr></table>';
 
   const nothing = result.append.length === 0 && result.deleted.length === 0
-    && result.plasmaKept.length === 0 && result.incomplete.length === 0;
+    && result.plasmaKept.length === 0 && result.incomplete.length === 0
+    && result.badFlags.length === 0 && result.duplicates.length === 0;
 
   if (result.deleteSkipped) {
     html += '<p style="color:#e74c3c;font-weight:bold">⚠ ' + result.valveReason + '</p>';

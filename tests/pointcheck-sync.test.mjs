@@ -459,3 +459,23 @@ test('两侧一致且无待补全 → 报告无差异', () => {
   const html = globalThis._pc_buildEmailHtml(emptyResult(), '2026-09-30');
   assert.match(html, /无差异|完全一致/);
 });
+
+test('零差异但有 badFlags 告警 → 不得出「完全一致」', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult({ badFlags: ['y'] }), '2026-09-30');
+
+  assert.doesNotMatch(html, /完全一致/, '有数据质量告警还说完全一致，邮件自相矛盾');
+  assert.match(html, /数据质量/, '告警本身仍须照常渲染');
+});
+
+test('零差异但有 duplicates 告警 → 不得出「完全一致」', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult({ duplicates: ['E0EN0001'] }), '2026-09-30');
+
+  assert.doesNotMatch(html, /完全一致/, '有重复机台号还说完全一致，邮件自相矛盾');
+  assert.match(html, /数据质量/, '告警本身仍须照常渲染');
+});
+
+test('零差异且无数据质量告警 → 仍须出「完全一致」', () => {
+  const html = globalThis._pc_buildEmailHtml(emptyResult(), '2026-09-30');
+
+  assert.match(html, /完全一致/, '真·无差异时不能把全清结论一并抑制掉');
+});
