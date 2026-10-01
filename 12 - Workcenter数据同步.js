@@ -114,7 +114,7 @@ function _ws_readSourceMachines() {
       "New Formed Cell": data[i][cols["New Formed Cell"]],
     };
 
-    // D列 Final Machine Type：机器性能不为空则用机器性能，否则用 Machine Type
+    // J列 Final Machine Type：机器性能不为空则用机器性能，否则用 Machine Type
     let finalMachineType = "";
     if (item["机器性能"] && item["机器性能"].toString().trim() !== "") {
       finalMachineType = item["机器性能"];

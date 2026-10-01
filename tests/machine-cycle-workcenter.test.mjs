@@ -25,7 +25,7 @@ function row(fields) {
 
 const HEADER = WC_HEADERS;
 
-test('19 列新结构：按表头名取列，筛出 是否主设备=Y 且 Final Machine Type=6AX 的机台', () => {
+test('20 列新结构：按表头名取列，筛出 是否主设备=Y 且 Final Machine Type=6AX 的机台', () => {
   const data = [
     HEADER,
     row({ 'Workcenter': 'M1', 'Machine Type': 'HT160', 'Final Machine Type': '6AX', '是否主设备': 'Y' }),

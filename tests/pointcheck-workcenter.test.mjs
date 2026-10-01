@@ -40,8 +40,10 @@ test('判据只看点检口径列：工艺标Y 不影响纳入，点检标Y 才�
 });
 
 test('只要求 Workcenter 与判据列：缺少 Machine Type / Final Machine Type 也能跑', () => {
-  // 这两列在模块里没有任何读取方，不再作为必需表头；缺了不该报缺失、更不该整表放弃
-  const lean = WC_HEADERS.filter(h => h !== 'Machine Type' && h !== 'Final Machine Type');
+  // 这两列在模块里没有任何读取方，不再作为必需表头；缺了不该报缺失、更不该整表放弃。
+  // 夹具保持真实 20 列宽度：这两列的「表头名」留空（等同被删名），其余表头名保持原列位；
+  // 数据行同宽 20，将来若改为按表头键取值也不会行列错位
+  const lean = WC_HEADERS.map(h => (h === 'Machine Type' || h === 'Final Machine Type') ? '' : h);
   const data = [lean, row({ 'Workcenter': 'M1' })];
 
   const r = globalThis._pc_buildIncludedSet(data);

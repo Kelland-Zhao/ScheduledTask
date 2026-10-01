@@ -1,7 +1,7 @@
 // V20260930.01 — 机台周期监控
 // 入口: monitorMachineCycle（每日 8:10 定时 or 手动）
 // Step 1: Workcenter(是否主设备=Y, Final Machine Type=6AX) → 同步至机台周期标准
-// 2026-09-30：Workcenter 表由 11 列改为 19 列，改为按表头名定位列
+// 2026-09-30：Workcenter 表由 11 列改为 20 列，改为按表头名定位列
 // Step 2: 检查标准周期为空 → 邮件提醒 S&C 维护
 // Step 3: IoT_Data 最新文件 → 按机台+班别取平均 → 写机台周期实际值
 // Step 4: 平均 vs 标准 > 0.5s → 邮件报警 IDL+S&C
