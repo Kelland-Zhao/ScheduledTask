@@ -289,8 +289,6 @@ const rec = function (email, process, role) { return { email: email, process: pr
 function runManual() { globalThis.checkPointCheckMachines(); }
 /** 定时：e 存在 → 启用安全阀 */
 function runScheduled() { globalThis.checkPointCheckMachines({}); }
-/** 预演：dryRunPointCheckSync */
-function runDryRun() { globalThis.dryRunPointCheckSync(); }
 
 /** 模块把一切异常都吞成「失败」Log —— 不守的话 fixture 写错会伪装成"零写入" */
 function assertNoFailure() {
@@ -585,33 +583,6 @@ test('IO-6 Workcenter 缺必需表头：跳过且不写（缺守时会把全表�
   assert.match(logs[0].detail, /缺少字段/);
   assert.match(logs[0].detail, /点检无需检查Y\/N/, '必须点名缺了哪个表头');
   assert.deepEqual(world.ml.getDataRange().getValues(), ML_MAIN_ROWS, 'MachineList 不得被灌入');
-});
-
-test('IO-7 预演不写任何数据：邮件状态列说「计划…·预演未写入」', () => {
-  const world = setupWorld({
-    mlRows: ML_MAIN_ROWS, mlBgs: ML_MAIN_BGS, wcRows: WC_MAIN_ROWS,
-    recipients: [rec('ops@example.com')],
-  });
-
-  runDryRun();
-  assertNoFailure();
-
-  assert.deepEqual(world.mutations(), [], '预演不得有任何写操作（含涂色）');
-  assert.equal(mails.length, 1, '预演仍要发报告邮件');
-
-  const html = mails[0].options.htmlBody;
-  assert.match(html, /计划追加·预演未写入/);
-  assert.match(html, /计划删除·预演未写入/);
-  assert.doesNotMatch(html, /已添加/, '预演什么都没写，说「已添加」就是谎报');
-  assert.doesNotMatch(html, /已删除/, '预演什么都没删，说「已删除」就是谎报');
-  assert.match(html, /E0EN0001/, '计划追加的机台要列出来');
-  assert.match(html, /D1DEL001/, '计划删除的机台要列出来');
-
-  assert.equal(logs[0].status, '成功');
-  assert.equal(logs[0].trigger, '预演');
-  assert.match(logs[0].detail, /预演未写入/);
-  assert.equal(logs[0].remark, '', '预演没删任何行，不能写删除快照');
-  assert.deepEqual(world.ml.getDataRange().getValues(), ML_MAIN_ROWS, 'MachineList 原封不动');
 });
 
 test('IO-8 幂等：连跑两遍，第二遍零写入（删除/追加/涂色都没有）', () => {

@@ -1,6 +1,5 @@
 // V20260930.12 — 点检机台核对 + 主数据双向同步
 // 入口：checkPointCheckMachines（每日 08:25 定时 or 手动，手动绕过安全阀）
-// 预演：dryRunPointCheckSync（只报告不写入）
 // 逻辑：纳入集 = Workcenter 全部行 − (「点检无需检查Y/N」= Y)
 //       纳入集有/MachineList-INJ 无 → 追加到表尾（工序=INJ，机台号用表11 原值仅trim，车间按第2位推，机型/点检人留空）
 //       MachineList-INJ 有/纳入集无 → 删除该机台号全部 INJ 行（Plasma 机型豁免）
@@ -35,9 +34,6 @@ const _pc_ST_DEL_ABSENT = "已删除·表11查不到";
 const _pc_ST_DEL_SKIPPED = "未执行·超阈值";
 const _pc_ST_PLASMA = "仅报告·Plasma豁免";
 const _pc_ST_INCOMPLETE = "待补全";
-// 预演：什么都没写，状态列必须说实话，否则首跑核对时会被误导
-const _pc_ST_ADD_PLANNED = "计划追加·预演未写入";
-const _pc_ST_DEL_PLANNED = "计划删除·预演未写入";
 
 // ========== 邮件中的两张表链接 ==========
 const _pc_URL_POINTCHECK = "https://docs.google.com/spreadsheets/d/" + _pc_ID_POINTCHECK + "/edit#gid=436306312";
@@ -307,22 +303,15 @@ function _pc_computeColorActions(bgData, injRowIdx, incompleteIdx) {
  * @param {Object} e 触发器事件对象。undefined（手动）= 绕过安全阀
  */
 function checkPointCheckMachines(e) {
-  _pc_run(e !== undefined && e !== null, null);
-}
-
-/** 预演入口：只报告不写入。用于上线首次核对将要追加/删除的清单 */
-function dryRunPointCheckSync() {
-  _pc_run(false, { dryRun: true });
+  _pc_run(e !== undefined && e !== null);
 }
 
 /**
  * 编排：读表 → 算计划 → 过阀 → 写入 → 标黄 → 发信 → 记日志
  * @param {boolean} isScheduled true=定时（启用安全阀）
- * @param {Object|null} opts {dryRun: true} 时不执行任何写入
  */
-function _pc_run(isScheduled, opts) {
-  const dryRun = !!(opts && opts.dryRun);
-  const trigger = dryRun ? "预演" : (isScheduled ? "定时" : "手动");
+function _pc_run(isScheduled) {
+  const trigger = isScheduled ? "定时" : "手动";
 
   try {
     console.log("开始执行点检机台核对...");
@@ -390,14 +379,7 @@ function _pc_run(isScheduled, opts) {
     // 待补全必须取**写入后**的状态：当天新追加的行机型/点检人为空，
     // 若沿用写入前的 injRows，这些行要到次日才进「待补全」区块，
     // 而那正是"安静的欠账"——这个机制存在的全部意义就是让它们当天可见
-    let incomplete = [];
-    if (dryRun) {
-      incomplete = _pc_collectIncomplete(injRows).concat(plan.append.map(function (a) {
-        return { machineNo: a.machineNo, rowData: [_pc_FILTER_PROCESS, a.workshop, "", a.machineNo, ""] };
-      }));
-    } else {
-      incomplete = _pc_executePlan(wsML, plan, valve).incomplete;
-    }
+    const incomplete = _pc_executePlan(wsML, plan, valve).incomplete;
 
     // 9. 邮件
     const result = {
@@ -413,7 +395,6 @@ function _pc_run(isScheduled, opts) {
       valveReason: valve.reason,
       badFlags: built.badFlags,
       duplicates: built.duplicates,
-      dryRun: dryRun,
     };
 
     const today = formatVariableAsDate(new Date());
@@ -421,8 +402,7 @@ function _pc_run(isScheduled, opts) {
     const html = _pc_buildEmailHtml(result, today);
 
     // 删除快照写进 Log，邮件会过期、快照是唯一的恢复依据。
-    // 预演没有任何行被删 —— 把「删除快照」写进 Log 会让人以为已删，故不写
-    const snapshotJson = dryRun ? "" : JSON.stringify(result.deleted.map(function (d) {
+    const snapshotJson = JSON.stringify(result.deleted.map(function (d) {
       return { machineNo: d.machineNo, reason: d.reason, rows: d.snapshot };
     }));
 
@@ -430,8 +410,7 @@ function _pc_run(isScheduled, opts) {
       _pc_sendMail(recipients.join(","), subject, html);
       const summary = "追加=" + plan.append.length + "台, 删除="
         + (valve.ok ? plan.toDelete.length + "台" : "0台(计划" + plan.toDelete.length + "台被安全阀拦下)")
-        + ", 待补全=" + incomplete.length + "行, TO=" + recipients.length + "人"
-        + (dryRun ? " (预演未写入)" : "");   // 预演什么都没写，摘要必须说实话
+        + ", 待补全=" + incomplete.length + "行, TO=" + recipients.length + "人";
       writeLog("checkPointCheckMachines", "成功", summary, trigger, snapshotJson);
       console.log("邮件发送成功: " + summary);
     } catch (err) {
@@ -534,12 +513,6 @@ function _pc_executePlan(wsML, plan, valve) {
   return { incomplete: incompleteRows };
 }
 
-/** 收集当前 INJ 中的待补全行，供邮件列出 */
-function _pc_collectIncomplete(injRows) {
-  return injRows.filter(function (r) { return _pc_isIncomplete(r.rowData); })
-    .map(function (r) { return { machineNo: r.machineNo, rowData: r.rowData }; });
-}
-
 // ========== 收件人 ==========
 /** 从 userID 表读取 O列=INJ 且 P列=S&C 的邮箱 */
 function _pc_getRecipients() {
@@ -586,7 +559,6 @@ function _pc_sendMail(to, subject, htmlBody) {
  */
 function _pc_buildEmailHtml(result, today) {
   const statusOf = function (reason) {
-    if (result.dryRun) return _pc_ST_DEL_PLANNED;
     // 阀拦下时这些机台**没被删**，状态列必须说实话 —— 这正是状态列存在的理由
     if (result.deleteSkipped) return _pc_ST_DEL_SKIPPED;
     return reason === "FLAG" ? _pc_ST_DEL_FLAG : _pc_ST_DEL_ABSENT;
@@ -606,17 +578,12 @@ function _pc_buildEmailHtml(result, today) {
   html += '<p style="margin:4px 0 0;opacity:0.7;font-size:12px">发送时间：' + today + '</p>';
   html += '</div>';
 
-  if (result.dryRun) {
-    html += '<div style="background:#fff3cd;border-left:4px solid #e67e22;padding:12px 24px;color:#7a5b00">';
-    html += '<strong>预演模式：仅报告，未写入任何数据。</strong></div>';
-  }
-
   html += '<div style="padding:24px">';
 
   html += '<table style="width:100%;border-collapse:collapse;margin-bottom:24px"><tr>';
-  html += _pc_card(result.dryRun ? "计划追加" : "本次追加", result.append.length, "#27ae60");
-  // 预演与「超阈值未执行」两种情况下都没有真删，标签与数值都说计划
-  html += _pc_card(result.dryRun || result.deleteSkipped ? "计划删除" : "本次删除", result.deleted.length, "#e74c3c");
+  html += _pc_card("本次追加", result.append.length, "#27ae60");
+  // 「超阈值未执行」时没有真删，标签与数值都说计划
+  html += _pc_card(result.deleteSkipped ? "计划删除" : "本次删除", result.deleted.length, "#e74c3c");
   html += _pc_card("待补全", result.incomplete.length, "#e67e22");
   html += '</tr></table>';
 
@@ -632,19 +599,12 @@ function _pc_buildEmailHtml(result, today) {
 
   // ===== 本次追加 =====
   if (result.append.length > 0) {
-    // 与删除区块同一套标题句式（计划 vs 本次）：预演一行都没写，标题必须说「计划」
-    const addTitle = result.dryRun ? "计划追加：" + result.append.length + " 台（预演未写入）"
-      : "本次追加：" + result.append.length + " 台";
-    html += _pc_section(addTitle);
-    if (result.dryRun) {
-      html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">以下机台<b>尚未追加</b>（预演未写入）。确认无误后手动运行 checkPointCheckMachines 执行；写入后该行「机型」「点检人」为空，将在点检表中标黄待补全</p>';
-    } else {
-      html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">⚠ 新机台的「机型」「点检人」为空白，请人工补齐（补齐前该行在点检表中标黄）</p>';
-    }
+    html += _pc_section("本次追加：" + result.append.length + " 台");
+    html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">⚠ 新机台的「机型」「点检人」为空白，请人工补齐（补齐前该行在点检表中标黄）</p>';
     html += buildHtmlTable(
       ["机台号", "车间", "状态"],
       result.append.map(function (r) {
-        return [r.machineNo, r.workshop || "(待补全)", result.dryRun ? _pc_ST_ADD_PLANNED : _pc_ST_ADDED];
+        return [r.machineNo, r.workshop || "(待补全)", _pc_ST_ADDED];
       }),
       "#27ae60");
   }
@@ -652,13 +612,10 @@ function _pc_buildEmailHtml(result, today) {
   // ===== 本次删除 =====
   if (result.deleted.length > 0 || result.deleteSkipped) {
     const n = result.deleted.length;
-    const title = result.dryRun ? "计划删除：" + n + " 台（预演未写入）"
-      : result.deleteSkipped ? "计划删除：" + n + " 台（超阈值，未执行）"
+    const title = result.deleteSkipped ? "计划删除：" + n + " 台（超阈值，未执行）"
       : "本次删除：" + n + " 台";
     html += _pc_section(title);
-    if (result.dryRun) {
-      html += '<p style="color:#e67e22;font-weight:bold;margin-bottom:8px">以下机台<b>尚未删除</b>。确认无误后手动运行 checkPointCheckMachines 执行</p>';
-    } else if (result.deleteSkipped) {
+    if (result.deleteSkipped) {
       html += '<p style="color:#e74c3c;font-weight:bold;margin-bottom:8px">以下机台本次<b>未删除</b>，待人工确认后手动运行放行</p>';
     } else {
       html += '<p style="color:#e74c3c;font-weight:bold;margin-bottom:8px">已从点检表移除；如需恢复，请照下表整行字段补回</p>';
