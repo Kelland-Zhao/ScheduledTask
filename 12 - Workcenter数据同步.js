@@ -20,7 +20,7 @@ const _WS_MANAGED_HEADERS = [
   "Workcenter", "Machine Type", "机器性能", "New Formed Cell",
   "HIM/Auto", "VIM-1", "VIM-2", "VIM-3", "VIM-4",
   "Final Machine Type", "是否主设备", "设备编号",
-  "无需检查Y/N",
+  "工艺无需检查Y/N",
 ];
 
 // 机组配置的 5 列：来源 2. Active Cell 的 M–Q，键为 New Formed Cell
@@ -317,11 +317,13 @@ function _ws_buildRow(row, width, machine, ctx) {
     }
   }
 
-  // 无需检查Y/N：6AX 且非主设备，或已退役（NA）→ Y；其余留空
+  // 工艺无需检查Y/N：6AX 且非主设备，或已退役（NA）→ Y；其余留空
   // 由 J/K 派生，所以放在最后算，取的是本行最终值
+  // 紧邻的「点检无需检查Y/N」是人工维护列：不在 _WS_MANAGED_HEADERS 里，
+  // 行重写时靠基础行整行带过来，本模块一律不写（见 tests/workcenter-sync.test.mjs 保留用例）
   const finalType = _ws_cellText(out[cols["Final Machine Type"]]);
   const isMain = _ws_cellText(out[cols["是否主设备"]]);
-  out[cols["无需检查Y/N"]] = ((finalType === "6AX" && isMain === "N") || finalType === "NA") ? "Y" : "";
+  out[cols["工艺无需检查Y/N"]] = ((finalType === "6AX" && isMain === "N") || finalType === "NA") ? "Y" : "";
 
   return out;
 }

@@ -4,7 +4,7 @@
 // ========== 数据源配置 ==========
 const INSPECTION_CONFIG = {
   // 机台清单：2026-09-30 起由 03 表 Database 改为 11 表 Workcenter
-  // （责任人/备份责任人/无需检查Y/N 已由模块 12 与一次性迁移同步至该表）
+  // （责任人/备份责任人/工艺无需检查Y/N 已由模块 12 与一次性迁移同步至该表）
   MACHINE_SOURCE: {
     ID: "12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM",
     SHEET_NAME: "Workcenter",
@@ -126,10 +126,11 @@ function _wiGetMachineData() {
 }
 
 // 机台清单必需字段（按表头名定位，不依赖列顺序）
-const _WI_REQUIRED_MACHINE_HEADERS = ["Workcenter", "责任人", "备份责任人", "无需检查Y/N"];
+const _WI_REQUIRED_MACHINE_HEADERS = ["Workcenter", "责任人", "备份责任人", "工艺无需检查Y/N"];
 
 /**
- * 从机台表数据区（含表头行）筛出需要周检的机台：免检（无需检查Y/N = Y）的排除。
+ * 从机台表数据区（含表头行）筛出需要周检的机台：免检（工艺无需检查Y/N = Y）的排除。
+ * 只认工艺口径列；紧邻的「点检无需检查Y/N」属点检口径，本模块不读。
  * 表头缺字段直接抛错 —— 宁可整个任务失败，也不能把字段读成 undefined 悄悄跑下去。
  * @param {Array<Array>} data getDataRange().getValues() 全量
  * @returns {Array<Object>} 表头名 → 值的记录数组
@@ -152,7 +153,7 @@ function _wi_filterMachines(data) {
     const rec = {};
     headers.forEach(function (h, j) { rec[h] = data[i][j]; });
 
-    const skipRaw = rec["无需检查Y/N"];
+    const skipRaw = rec["工艺无需检查Y/N"];
     const skipFlag = skipRaw === undefined || skipRaw === null ? "" : String(skipRaw).trim();
     if (skipFlag === "Y") continue; // 免检机台
 

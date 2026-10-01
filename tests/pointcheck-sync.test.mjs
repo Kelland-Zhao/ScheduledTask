@@ -53,10 +53,10 @@ const builtWith = (machines, flagged) => ({
   included: machines, flagged: flagged || {}, missing: [], duplicates: [], badFlags: [],
 });
 
-// —— Workcenter 最小表头 fixture（按表头名定位，只需 4 个必需列）——
+// —— Workcenter 最小表头 fixture（按表头名定位，只需 2 个必需列）——
 // 行值取自生产表真实机台号；仅大小写/空格做变体，用于锁 spec §3.3/§12 的「写入形态」
-const WC_HEADERS_MIN = ['Workcenter', 'Machine Type', 'Final Machine Type', '无需检查Y/N'];
-const wcRow = (no, flag) => [no, 'HT160', '6AX', flag || ''];
+const WC_HEADERS_MIN = ['Workcenter', '点检无需检查Y/N'];
+const wcRow = (no, flag) => [no, flag || ''];
 
 test('追加写入表11 原值：仅 trim，保留大小写（spec §3.3/§12）', () => {
   // 生产表 328 行 Workcenter 当前恰好都是大写无空格，这里取真实机台号 V2FTA164

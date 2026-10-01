@@ -81,12 +81,13 @@ globalThis.SpreadsheetApp = {
 };
 
 // ===== 夹具 =====
+// 20 列：S = 程序派生的「工艺无需检查Y/N」，T = 人工维护的「点检无需检查Y/N」（模块 12 不碰）
 const WC_HEADERS = [
   'Workcenter', 'Machine Type', '机器性能', 'New Formed Cell',
   'HIM/Auto', 'VIM-1', 'VIM-2', 'VIM-3', 'VIM-4',
   'Final Machine Type', '是否主设备', '设备编号',
   '机型', '设备类型1', '设备类型2', '自动化类型',
-  '责任人', '备份责任人', '无需检查Y/N',
+  '责任人', '备份责任人', '工艺无需检查Y/N', '点检无需检查Y/N',
 ];
 
 const LINE_HEADERS = ['Count', 'Individual Machine', 'Machine Type', '机器性能', 'New Formed Cell', 'Remark'];
@@ -105,9 +106,9 @@ const ACTIVE_GROUP_ROW = [
 const ACTIVE_INDEX = Object.fromEntries(ACTIVE_HEADERS.map((h, i) => [h, i]));
 const LINE_INDEX = Object.fromEntries(LINE_HEADERS.map((h, i) => [h, i]));
 
-// 一行 Workcenter 数据（19 列），未指定的列留空
+// 一行 Workcenter 数据（20 列），未指定的列留空
 function wcRow(fields) {
-  const row = new Array(19).fill('');
+  const row = new Array(WC_HEADERS.length).fill('');
   Object.entries(fields).forEach(([name, val]) => {
     row[WC_HEADERS.indexOf(name)] = val;
   });
@@ -181,7 +182,7 @@ test('已有机台：更新程序列，人工列 M–R 原样保留', () => {
         'HIM/Auto': '旧HIM', 'VIM-1': '旧V1',
         'Final Machine Type': '旧Final', '是否主设备': 'N', '设备编号': '旧编号',
         '机型': '机型X', '设备类型1': '类型1X', '设备类型2': '类型2X', '自动化类型': '自动X',
-        '责任人': '甲', '备份责任人': '乙', '无需检查Y/N': 'N',
+        '责任人': '甲', '备份责任人': '乙', '工艺无需检查Y/N': 'N',
       }),
     ],
   });
@@ -374,14 +375,14 @@ test('安全阀边界：源表机台数恰好是表内一半 → 放行', () => 
   assert.ok(!logs.some(l => l.status === '跳过'), '没有跳过');
 });
 
-// ===== Cycle 7：【无需检查Y/N】自动判定 =====
+// ===== Cycle 7：【工艺无需检查Y/N】自动判定 =====
 function sOf(setupOpts) {
   setup(setupOpts);
   globalThis.syncWorkcenterData();
   return dataRows(workcenterSheet())[0][18];
 }
 
-test('无需检查：J=6AX 且 K=N → Y', () => {
+test('工艺无需检查：J=6AX 且 K=N → Y', () => {
   assert.equal(sOf({
     line: [lineRow('M1', 'FT400', '6AX', 'C1')],
     activeCell: [cellRow('OTHER', '', '', '', '', '')],  // M1 不在 Active Cell → K=N
@@ -389,7 +390,7 @@ test('无需检查：J=6AX 且 K=N → Y', () => {
   }), 'Y');
 });
 
-test('无需检查：J=6AX 但 K=Y（是主设备）→ 留空', () => {
+test('工艺无需检查：J=6AX 但 K=Y（是主设备）→ 留空', () => {
   assert.equal(sOf({
     line: [lineRow('M1', 'FT400', '6AX', 'M1')],
     activeCell: [cellRow('M1', '', '', '', '', '')],    // M1 在 Active Cell → K=Y
@@ -397,7 +398,7 @@ test('无需检查：J=6AX 但 K=Y（是主设备）→ 留空', () => {
   }), '');
 });
 
-test('无需检查：J=NA（报废/闲置）→ Y', () => {
+test('工艺无需检查：J=NA（报废/闲置）→ Y', () => {
   assert.equal(sOf({
     line: [lineRow('M1', 'FT400', '报废', 'C1')],
     activeCell: [cellRow('OTHER', '', '', '', '', '')],
@@ -405,7 +406,7 @@ test('无需检查：J=NA（报废/闲置）→ Y', () => {
   }), 'Y');
 });
 
-test('无需检查：其他机型 → 留空', () => {
+test('工艺无需检查：其他机型 → 留空', () => {
   assert.equal(sOf({
     line: [lineRow('M1', 'HT160', '', 'C1')],
     activeCell: [cellRow('OTHER', '', '', '', '', '')],
@@ -413,12 +414,38 @@ test('无需检查：其他机型 → 留空', () => {
   }), '');
 });
 
-test('无需检查：S 列归程序管，人工改的值会被重算覆盖', () => {
+test('工艺无需检查：S 列归程序管，人工改的值会被重算覆盖', () => {
   assert.equal(sOf({
     line: [lineRow('M1', 'HT160', '', 'C1')],           // J=HT160 → 非免检
     activeCell: [cellRow('OTHER', '', '', '', '', '')],
-    workcenter: [wcRow({ 'Workcenter': 'M1', '无需检查Y/N': 'Y' })],  // 人工写着 Y
+    workcenter: [wcRow({ 'Workcenter': 'M1', '工艺无需检查Y/N': 'Y' })],  // 人工写着 Y
   }), '', '重算后应为空');
+});
+
+// ===== Cycle 8：【点检无需检查Y/N】人工列不得被同步覆盖 =====
+test('人工列保护：点检无需检查Y/N 的值在同步后原样保留（模块 12 绝不写它）', () => {
+  // 模块 12 的写回是「整行重写」：基础行取自表内该行，再逐列覆盖受管列。
+  // 点检无需检查Y/N 不在 _WS_MANAGED_HEADERS 里，靠基础行整行带过来 —— 这是设计假设，
+  // 不是保证：若它被加进受管列（或按第 20 列硬写），人类的标记每天 08:20 会被静默抹掉。本用例守住这一点。
+  setup({
+    line: [lineRow('M1', 'HT160', '', 'C1'), lineRow('M2', 'DP', '', 'C2')],
+    activeCell: [cellRow('C1', 'H1', '', '', '', '')],
+    workcenter: [
+      wcRow({ 'Workcenter': 'M1', '点检无需检查Y/N': 'Y', '责任人': '甲' }),
+      // M2 在源里、表里没有 → 走追加分支；新增行没有人工值可带，必须留空
+    ],
+  });
+
+  globalThis.syncWorkcenterData();
+
+  const col = WC_HEADERS.indexOf('点检无需检查Y/N');
+  const rows = dataRows(workcenterSheet());
+
+  assert.equal(rowsOf(workcenterSheet())[0][col], '点检无需检查Y/N', '表头行本身也不得被动过');
+  assert.deepEqual(rows.map(r => r[0]), ['M1', 'M2'], '同步确实执行了（M2 被追加），断言不是空跑');
+  assert.equal(rows[0][1], 'HT160', '受管列确实被写入');
+  assert.equal(rows[0][col], 'Y', 'M1 的人工标记必须原样保留');
+  assert.equal(rows[1][col], '', 'M2 是新增行，无人工值 → 留空');
 });
 
 // ===== Cycle 6：Final Machine Type 写入规则 =====

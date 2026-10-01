@@ -1,5 +1,5 @@
 // 模块 33 机台周期监控 — 从 Workcenter 筛选机台的列定位测试
-// 覆盖：11 列 → 19 列新结构下按表头名取列、是否主设备/机型过滤、表头缺失时的保护
+// 覆盖：11 列 → 20 列新结构下按表头名取列、是否主设备/机型过滤、表头缺失时的保护
 // 运行：node --test tests/machine-cycle-workcenter.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,13 +8,13 @@ import fs from 'node:fs';
 const code = fs.readFileSync(new URL('../33 - 机台周期监控.js', import.meta.url), 'utf8');
 (0, eval)(code);
 
-// 重构后的 19 列结构
+// 重构后的 20 列结构（S=工艺无需检查Y/N 派生列，T=点检无需检查Y/N 人工列；本模块两列都不读）
 const WC_HEADERS = [
   'Workcenter', 'Machine Type', '机器性能', 'New Formed Cell',
   'HIM/Auto', 'VIM-1', 'VIM-2', 'VIM-3', 'VIM-4',
   'Final Machine Type', '是否主设备', '设备编号',
   '机型', '设备类型1', '设备类型2', '自动化类型',
-  '责任人', '备份责任人', '无需检查Y/N',
+  '责任人', '备份责任人', '工艺无需检查Y/N', '点检无需检查Y/N',
 ];
 
 function row(fields) {

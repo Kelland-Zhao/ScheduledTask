@@ -1,7 +1,7 @@
 // V20260930.12 — 点检机台核对 + 主数据双向同步
 // 入口：checkPointCheckMachines（每日 08:25 定时 or 手动，手动绕过安全阀）
 // 预演：dryRunPointCheckSync（只报告不写入）
-// 逻辑：纳入集 = Workcenter 全部行 − (「无需检查Y/N」= Y)
+// 逻辑：纳入集 = Workcenter 全部行 − (「点检无需检查Y/N」= Y)
 //       纳入集有/MachineList-INJ 无 → 追加到表尾（工序=INJ，机台号用表11 原值仅trim，车间按第2位推，机型/点检人留空）
 //       MachineList-INJ 有/纳入集无 → 删除该机台号全部 INJ 行（Plasma 机型豁免）
 //       安全阀：拟删 > 10 台 → 只报告不删；手动运行绕过
@@ -17,9 +17,9 @@ const _pc_SHEET_WORKCENTER = "Workcenter";
 
 // ========== 纳入集判定的表头名（按名定位，不硬编码列号）==========
 const _pc_HEADER_WORKCENTER = "Workcenter";
-const _pc_HEADER_MACHINE_TYPE = "Machine Type";
-const _pc_HEADER_FINAL_TYPE = "Final Machine Type";
-const _pc_HEADER_FLAG = "无需检查Y/N";
+// 判据列 = 人工维护的「点检无需检查Y/N」。
+// 原「无需检查Y/N」已改名为「工艺无需检查Y/N」（模块 12 派生、工艺口径），本模块不读
+const _pc_HEADER_FLAG = "点检无需检查Y/N";
 const _pc_FLAG_YES = "Y";
 const _pc_EXEMPT_PLASMA = "Plasma";       // 点检侧独有、表11 完全没有的机型，不纳入删除
 
@@ -83,14 +83,14 @@ function _pc_normalizeMachineNo(value) {
 
 /**
  * 解析 Workcenter，产出纳入集与数据质量问题
- * 纳入集 = 全部行 − (「无需检查Y/N」= Y)；判据按表头名定位列
+ * 纳入集 = 全部行 − (「点检无需检查Y/N」= Y)；判据按表头名定位列
  * @param {Array<Array>} dataWC getDataRange().getValues() 全量（含表头行）
  * @returns {{included: Object, flagged: Object, missing: Array<string>, duplicates: Array<string>, badFlags: Array<string>}}
- *   included[machineNo] = {machineType, machineModel, rawNo}；rawNo 为表11 原值仅 trim（写入用，比对用键）
+ *   included[machineNo] = {rawNo}；rawNo 为表11 原值仅 trim（写入用，比对用键）
  *   missing 非空时调用方应跳过，不要用空 included 继续
  */
 function _pc_buildIncludedSet(dataWC) {
-  const required = [_pc_HEADER_WORKCENTER, _pc_HEADER_MACHINE_TYPE, _pc_HEADER_FINAL_TYPE, _pc_HEADER_FLAG];
+  const required = [_pc_HEADER_WORKCENTER, _pc_HEADER_FLAG];
   const cols = _pc_headerIndex(dataWC[0] || []);
   const missing = required.filter(function (n) { return cols[n] === undefined; });
   if (missing.length > 0) return { included: {}, flagged: {}, missing: missing, duplicates: [], badFlags: [] };
@@ -135,8 +135,6 @@ function _pc_buildIncludedSet(dataWC) {
     }
 
     included[machineNo] = {
-      machineType: String(dataWC[i][cols[_pc_HEADER_MACHINE_TYPE]] || "").trim(),
-      machineModel: String(dataWC[i][cols[_pc_HEADER_FINAL_TYPE]] || "").trim(),
       // 写入主数据时用原值：仅 trim、保留大小写（spec §3.3/§12）；比对键仍是上面的归一值
       rawNo: cellNo === undefined || cellNo === null ? "" : String(cellNo).trim(),
     };
@@ -599,7 +597,7 @@ function _pc_buildEmailHtml(result, today) {
 
   html += '<div style="background:#E60012;color:white;padding:16px 24px">';
   html += '<h2 style="margin:0">注塑机台同步报告</h2>';
-  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px">比对范围：MachineList(工序=INJ) ↔ Workcenter(排除「无需检查Y/N」=Y)</p>';
+  html += '<p style="margin:8px 0 0;opacity:0.95;font-size:14px">比对范围：MachineList(工序=INJ) ↔ Workcenter(排除「点检无需检查Y/N」=Y)</p>';
   html += '<p style="margin:4px 0 0;opacity:0.95;font-size:14px">';
   html += '<a href="' + _pc_URL_POINTCHECK + '" style="color:#fff">点检机台主数据</a>';
   html += ' &nbsp;|&nbsp; ';
@@ -700,7 +698,7 @@ function _pc_buildEmailHtml(result, today) {
   if (result.badFlags.length > 0 || result.duplicates.length > 0) {
     html += _pc_section("数据质量告警");
     if (result.badFlags.length > 0) {
-      html += '<p style="color:#e74c3c">「无需检查Y/N」出现异常取值（<b>不会被当作 Y 排除</b>）：'
+      html += '<p style="color:#e74c3c">「点检无需检查Y/N」出现异常取值（<b>不会被当作 Y 排除</b>）：'
         + result.badFlags.join("、") + '。请改为 Y 或清空。</p>';
     }
     if (result.duplicates.length > 0) {
