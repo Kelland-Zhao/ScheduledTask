@@ -803,7 +803,9 @@ test('维护提醒邮件：含机台号、缺失字段、新增/待补齐标记�
   assert.ok(html.includes('TB1'));
   assert.ok(html.includes('TB2'));
   assert.ok(html.includes('2026-10-02'));
-  assert.ok(html.includes('https://script.google.com/a/colpal.com/macros/s/AKfycbyaQjG5yFGYxU825DrODhSLl2bdfbYKpqAH4qOIzKoTJ4b-5qU/exec?v=INJ_MachineMaster'), 'EDS 维护页链接');
+  // 维护入口必须先落 EDS 登录页（登录后由 next 回跳维护页）；不得再出现未登录可直达维护页的链接
+  assert.ok(html.includes('https://script.google.com/a/colpal.com/macros/s/AKfycbyaQjG5yFGYxU825DrODhSLl2bdfbYKpqAH4qOIzKoTJ4b-5qU/exec?v=home_new_1.0&next=INJ_MachineMaster'), 'EDS 登录页链接（带 next 回跳）');
+  assert.ok(!html.includes('exec?v=INJ_MachineMaster'), '不得再出现直达维护页的链接');
   assert.ok(html.includes('https://docs.google.com/spreadsheets/d/12MXO53wJC8s_J-IE2uGY5jx35rnUE7rxW1xvwVU-FxM/edit#gid=0'), 'Workcenter 表链接');
 });
 

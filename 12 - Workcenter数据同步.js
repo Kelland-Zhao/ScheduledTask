@@ -50,7 +50,8 @@ const _ws_USER_COL_POS = 15;    // P 列 职位（EDS 组）
 const _ws_USER_COL_MAIL = 9;    // J 列 GMail
 
 // EDS「注塑机台主数据」维护页（EQU-Digital-System 生产部署路由）与 Workcenter 表链接
-const _ws_URL_EDS_MM = "https://script.google.com/a/colpal.com/macros/s/AKfycbyaQjG5yFGYxU825DrODhSLl2bdfbYKpqAH4qOIzKoTJ4b-5qU/exec?v=INJ_MachineMaster";
+// 维护页必须登录 EDS 才能进：链接先落登录页，登录成功后由 next 参数回到维护页（未登录直达 ?v=INJ_MachineMaster 会被页面兜底弹回登录页）
+const _ws_URL_EDS_MM = "https://script.google.com/a/colpal.com/macros/s/AKfycbyaQjG5yFGYxU825DrODhSLl2bdfbYKpqAH4qOIzKoTJ4b-5qU/exec?v=home_new_1.0&next=INJ_MachineMaster";
 const _ws_URL_WC = "https://docs.google.com/spreadsheets/d/" + _ws_ID_EQU + "/edit#gid=0";
 
 // ========== 主入口 ==========
