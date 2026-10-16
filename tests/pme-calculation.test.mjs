@@ -409,6 +409,67 @@ test('Master Data 输出表头缺失时拒绝写入', () => {
   );
 });
 
+test('Master Data 允许 P:R 技术员字段并在更新时原样保留', () => {
+  const headers = [
+    '序列号/ Serial No.', '工序/ KeyProcess', '保养日期/ PM_Date', '机台号/ Workcenter',
+    'Production_AvailableTime_BEFORE PM', 'Production_AvailableTime_AFTER PM',
+    'AU_BEFORE PM', 'AU_AFTER PM', 'UPDT_BEFORE PM', 'UPDT_AFTER PM', 'UPDT Gap',
+    '保养月份/ YearMonth', '子工序/ SubProcess', '生产状态/ Production Status',
+    '绩效状态/ Performance Status', '根本原因/  Root cause',
+    '预防措施/Preventive action', '状态/Status',
+  ];
+  const oldRow = [
+    '2026-01-01M1', 'IM', '2026-01-01', 'M1', 8, 150, 0.5, 0.6, 0.2, 0.3, 0.1,
+    '202601', '', '生产', '差/Bad', 'CO导致UPDT偏高', '增加停机确认', '已完成',
+  ];
+  const newRow = [
+    '2026-01-02M2', 'PK', '2026-01-02', 'M2', 8, 150, 0.5, 0.5, 0.2, 0.2, 0,
+    '202601', '', '生产', '好/Good',
+  ];
+  const calculated = [[
+    '2026-01-01M1', 'IM', '2026-01-01', 'M1', 16, 160, 0.4, 0.4, 0.1, 0.1, 0,
+    '202601', '', '生产', '好/Good',
+  ]];
+
+  assert.equal(_pme_validateMasterDataHeaders(headers), true);
+  const merged = _pme_upsertMasterData([headers, oldRow, newRow], calculated);
+
+  assert.equal(merged[0].length, headers.length);
+  assert.deepEqual(merged[1].slice(15), oldRow.slice(15));
+  assert.deepEqual(merged[2].slice(15), newRow.slice(15));
+});
+
+test('Master Data 新增记录的技术员字段为空，写入只覆盖 A:O', () => {
+  const headers = _pme_MASTER_HEADERS.concat([
+    '根本原因/  Root cause', '预防措施/Preventive action', '状态/Status',
+  ]);
+  const calculated = [[
+    '2026-01-03M3', 'TF', '2026-01-03', 'M3', 20, 160, 0.4, 0.4, 0.1, 0.1, 0,
+    '202601', 'AFT & USW', '生产', '好/Good',
+  ]];
+  const merged = _pme_upsertMasterData([headers], calculated);
+
+  assert.deepEqual(merged[1].slice(15), ['', '', '']);
+
+  const writes = [];
+  const sheet = {
+    getRange(row, column, numRows, numColumns) {
+      return {
+        setValues(values) { writes.push({ row, column, numRows, numColumns, values }); },
+      };
+    },
+  };
+  _pme_writeMasterDataRows(sheet, merged);
+
+  assert.deepEqual(writes[0], {
+    row: 1,
+    column: 1,
+    numRows: 2,
+    numColumns: 15,
+    values: [headers.slice(0, 15), calculated[0]],
+  });
+});
+
 function masterRow(fields) {
   const row = new Array(15).fill('');
   row[0] = fields.serialNo || '';

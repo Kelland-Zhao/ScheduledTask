@@ -764,10 +764,8 @@ function _pme_upsertMasterData(existingRows, calculatedRows) {
     ? existingRows.map(function (row) { return row.slice(); })
     : [_pme_MASTER_HEADERS.slice()];
   var header = current[0] || [];
-  if (header.length !== _pme_MASTER_HEADERS.length ||
-      _pme_MASTER_HEADERS.some(function (name, index) { return header[index] !== name; })) {
-    throw new Error("Master Data 表头与 PME 15 列结构不一致");
-  }
+  _pme_validateMasterDataHeaders(header);
+  var width = header.length;
 
   var rowIndexBySerial = {};
   for (var rowIndex = 1; rowIndex < current.length; rowIndex++) {
@@ -778,23 +776,32 @@ function _pme_upsertMasterData(existingRows, calculatedRows) {
   (calculatedRows || []).forEach(function (row) {
     var serialNo = String(row && row[0] || "").trim();
     if (!serialNo) return;
-    var copied = row.slice();
     if (rowIndexBySerial[serialNo] === undefined) {
       rowIndexBySerial[serialNo] = current.length;
-      current.push(copied);
+      current.push(_pme_mergeMasterDataRow(row, null, width));
     } else {
-      current[rowIndexBySerial[serialNo]] = copied;
+      var rowIndex = rowIndexBySerial[serialNo];
+      current[rowIndex] = _pme_mergeMasterDataRow(row, current[rowIndex], width);
     }
   });
   return current;
 }
 
 function _pme_validateMasterDataHeaders(headers) {
-  if (!Array.isArray(headers) || headers.length !== _pme_MASTER_HEADERS.length ||
+  if (!Array.isArray(headers) || headers.length < _pme_MASTER_HEADERS.length ||
       _pme_MASTER_HEADERS.some(function (name, index) { return headers[index] !== name; })) {
-    throw new Error("Master Data 表头与 PME 15 列结构不一致");
+    throw new Error("Master Data 表头前 15 列与 PME 结构不一致");
   }
   return true;
+}
+
+function _pme_mergeMasterDataRow(calculatedRow, existingRow, width) {
+  var merged = (calculatedRow || []).slice(0, _pme_MASTER_HEADERS.length);
+  while (merged.length < _pme_MASTER_HEADERS.length) merged.push("");
+  for (var column = _pme_MASTER_HEADERS.length; column < width; column++) {
+    merged.push(existingRow && existingRow[column] !== undefined ? existingRow[column] : "");
+  }
+  return merged;
 }
 
 /**
@@ -948,7 +955,10 @@ function _pme_writeMasterDataRows(sheet, rows) {
   if (!sheet) throw new Error("Master Data Sheet 不存在");
   _pme_validateMasterDataHeaders(rows[0] || []);
   var width = _pme_MASTER_HEADERS.length;
-  sheet.getRange(1, 1, rows.length, width).setValues(rows);
+  var values = (rows || []).map(function (row) {
+    return _pme_mergeMasterDataRow(row, null, width);
+  });
+  sheet.getRange(1, 1, values.length, width).setValues(values);
 }
 
 function _pme_buildExcludedSerials(pmPlans, exclusionRules) {
