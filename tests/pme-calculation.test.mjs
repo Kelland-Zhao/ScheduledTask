@@ -294,6 +294,34 @@ test('来源覆盖校验：日期范围重叠时中止', () => {
   );
 });
 
+test('AEM 来源读取：按配置的 ProdDate 范围过滤记录', () => {
+  const rows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2025-12-31', Workcenter: 'M1', Shift: 1, process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', Shift: 1, process: 'IM' }),
+    aemRow({ ProdDate: '2026-04-01', Workcenter: 'M1', Shift: 1, process: 'IM' }),
+  ];
+
+  const result = _pme_filterAemRowsBySourceRange(rows, _pme_headerIndex(AEM_HEADERS), {
+    label: '2026Q1',
+    start: '2026-01-01',
+    end: '2026-03-31',
+  });
+
+  assert.deepEqual(result.slice(1).map(row => row[0]), ['2026-01-01']);
+});
+
+test('AEM 来源读取：配置日期范围内没有有效数据时中止', () => {
+  assert.throws(
+    () => _pme_filterAemRowsBySourceRange(
+      [AEM_HEADERS, aemRow({ ProdDate: '2025-12-31', Workcenter: 'M1', Shift: 1, process: 'IM' })],
+      _pme_headerIndex(AEM_HEADERS),
+      { label: '2026Q1', start: '2026-01-01', end: '2026-03-31' },
+    ),
+    /2026Q1.*日期范围内没有有效数据/,
+  );
+});
+
 test('PM 计划没有 AEM PM 记录时返回告警，不强行匹配其他记录', () => {
   const plan = {
     serialNo: '2026-01-02M1',
@@ -417,6 +445,7 @@ test('KPI Summary 写入：使用既有 2026 行列、Goal 和 YTD，并清理�
 test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总并返回执行摘要', () => {
   const masterWrites = [];
   const kpiWrites = [];
+  const logs = [];
 
   function memorySheet(name, rows, writes) {
     return {
@@ -468,11 +497,13 @@ test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总�
   const aemSpreadsheet = { getSheetByName() { return memorySheet('SourceData', aemRows, []); } };
 
   const previousSpreadsheetApp = globalThis.SpreadsheetApp;
+  const previousWriteLog = globalThis.writeLog;
   const previousSources = _pme_CONFIG.aemSources;
-  _pme_CONFIG.aemSources = [previousSources[0]];
+  _pme_CONFIG.aemSources = [previousSources[4]];
   globalThis.SpreadsheetApp = {
     openById(id) { return id === _pme_CONFIG.mainSpreadsheetId ? mainSpreadsheet : aemSpreadsheet; },
   };
+  globalThis.writeLog = (...args) => logs.push(args);
 
   try {
     const result = executePMECalculation({ triggerType: '手动', months: ['202601'] });
@@ -485,8 +516,10 @@ test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总�
     });
     assert.ok(masterWrites.some(item => item.name === 'Master Data' && item.values.length === 2));
     assert.ok(kpiWrites.some(item => item.name === 'KPI Summary' && item.row === 10 && item.column === 4));
+    assert.ok(logs.some(args => args[0] === 'executePMECalculation' && args[1] === '成功'));
   } finally {
     _pme_CONFIG.aemSources = previousSources;
     globalThis.SpreadsheetApp = previousSpreadsheetApp;
+    globalThis.writeLog = previousWriteLog;
   }
 });

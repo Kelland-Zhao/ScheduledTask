@@ -776,6 +776,28 @@ function _pme_readSheetRows(sheet, chunkRows) {
   return rows;
 }
 
+function _pme_filterAemRowsBySourceRange(rows, headerIndex, source) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("AEM " + String(source && source.label || "来源") + " SourceData 为空");
+  }
+
+  var start = _pme_dateKey(source && source.start);
+  var end = source && source.end ? _pme_dateKey(source.end) : "";
+  var dateColumn = headerIndex && headerIndex.ProdDate;
+  var filtered = rows.slice(1).filter(function (row) {
+    var dateKey = _pme_dateKey(dateColumn === undefined ? "" : row[dateColumn]);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) return false;
+    if (start && dateKey < start) return false;
+    if (end && dateKey > end) return false;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    throw new Error("AEM " + String(source && source.label || "来源") + " 在配置日期范围内没有有效数据");
+  }
+  return [rows[0]].concat(filtered);
+}
+
 function _pme_loadExclusionRules(mainSpreadsheet) {
   var sheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.exclusionSheetName);
   if (!sheet || sheet.getLastRow() < 1) return [];
@@ -826,9 +848,10 @@ function _pme_readAemSources() {
     var sheet = spreadsheet.getSheetByName(_pme_CONFIG.sourceSheetName);
     if (!sheet) throw new Error("AEM 来源缺少 SourceData: " + source.label);
     var rows = _pme_readSheetRows(sheet);
-    if (rows.length === 0) return;
+    if (rows.length === 0) throw new Error("AEM " + source.label + " SourceData 为空");
 
     var headerIndex = _pme_requireHeaders(rows[0], requiredHeaders, "AEM " + source.label + " SourceData");
+    var sourceRows = _pme_filterAemRowsBySourceRange(rows, headerIndex, source);
     if (!sourceHeaders) {
       sourceHeaders = rows[0].slice();
       allRows.push(sourceHeaders);
@@ -837,7 +860,7 @@ function _pme_readAemSources() {
       throw new Error("AEM 来源表头不一致: " + source.label);
     }
     void headerIndex;
-    Array.prototype.push.apply(allRows, rows.slice(1));
+    Array.prototype.push.apply(allRows, sourceRows.slice(1));
   });
 
   return {
@@ -903,6 +926,15 @@ function _pme_getExecutionMonths(event) {
   return _pme_generateCurrentMonths();
 }
 
+function _pme_writeExecutionLog(status, detail, trigger) {
+  if (typeof writeLog !== "function") return;
+  try {
+    writeLog("executePMECalculation", status, detail, trigger, "");
+  } catch (error) {
+    console.warn("PME 写入 Log 失败: " + error.message);
+  }
+}
+
 /**
  * PME 入口：完成来源读取、计算、Master Data 更新和 KPI Summary 汇总。
  * @param {{triggerType?: string}=} event
@@ -910,28 +942,39 @@ function _pme_getExecutionMonths(event) {
  */
 function executePMECalculation(event) {
   var trigger = event && event.triggerType ? String(event.triggerType) : "manual";
-  var source = _pme_loadSourceData();
-  var calculatedRows = _pme_calculateMasterRows(source);
-  var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
-  var masterDataSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.masterDataSheetName);
-  var kpiSummarySheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.kpiSummarySheetName);
-  if (!masterDataSheet) throw new Error("Master Data Sheet 不存在");
-  if (!kpiSummarySheet) throw new Error("KPI Summary Sheet 不存在");
+  try {
+    var source = _pme_loadSourceData();
+    var calculatedRows = _pme_calculateMasterRows(source);
+    var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
+    var masterDataSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.masterDataSheetName);
+    var kpiSummarySheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.kpiSummarySheetName);
+    if (!masterDataSheet) throw new Error("Master Data Sheet 不存在");
+    if (!kpiSummarySheet) throw new Error("KPI Summary Sheet 不存在");
 
-  var existingRows = _pme_readSheetRows(masterDataSheet);
-  var mergedRows = _pme_upsertMasterData(existingRows, calculatedRows);
-  var months = _pme_getExecutionMonths(event);
-  var excludedSerials = _pme_buildExcludedSerials(source.pmPlans, source.exclusionRules);
-  var summary = _pme_calculateKpiSummary(mergedRows.slice(1), months, excludedSerials);
+    var existingRows = _pme_readSheetRows(masterDataSheet);
+    var mergedRows = _pme_upsertMasterData(existingRows, calculatedRows);
+    var months = _pme_getExecutionMonths(event);
+    var excludedSerials = _pme_buildExcludedSerials(source.pmPlans, source.exclusionRules);
+    var summary = _pme_calculateKpiSummary(mergedRows.slice(1), months, excludedSerials);
 
-  _pme_writeMasterDataRows(masterDataSheet, mergedRows);
-  _pme_writeKpiSummary(summary, months, kpiSummarySheet);
+    _pme_writeMasterDataRows(masterDataSheet, mergedRows);
+    _pme_writeKpiSummary(summary, months, kpiSummarySheet);
 
-  return {
-    trigger: trigger,
-    planCount: source.pmPlans.length,
-    calculatedCount: calculatedRows.length,
-    warningCount: (calculatedRows.warnings || []).length,
-    months: months,
-  };
+    var result = {
+      trigger: trigger,
+      planCount: source.pmPlans.length,
+      calculatedCount: calculatedRows.length,
+      warningCount: (calculatedRows.warnings || []).length,
+      months: months,
+    };
+    _pme_writeExecutionLog(
+      "成功",
+      "计划 " + result.planCount + " 条，计算 " + result.calculatedCount + " 条，告警 " + result.warningCount + " 条",
+      trigger,
+    );
+    return result;
+  } catch (error) {
+    _pme_writeExecutionLog("失败", error.message, trigger);
+    throw error;
+  }
 }
