@@ -182,10 +182,12 @@ AEM 文件通过 `Period` 和 `ProdDate` 选择，不根据文件名推断年份
 - `ProdDate`
 - `Workcenter`
 - `Shift`
+- `PM`
 - `Prod_Hours`
 - `NetRuntime`
 - `PlantAvailableTime`
 - `process`
+- `WorkcenterGroup`
 - `CO`
 
 IM 只使用 AEM 中 `process = IM` 的记录，并排除 `WorkcenterGroup = OPK` 和 `WorkcenterGroup = Dummy`。TF 和 PK 使用各自对应工序的数据。
