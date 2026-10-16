@@ -926,10 +926,17 @@ function _pme_getExecutionMonths(event) {
   return _pme_generateCurrentMonths();
 }
 
+function _pme_normalizeTriggerLabel(trigger) {
+  var raw = trigger == null ? "" : String(trigger);
+  if (raw === "scheduled" || raw === "定时") return "定时";
+  if (raw === "manual" || raw === "手动" || raw === "") return "手动";
+  return raw;
+}
+
 function _pme_writeExecutionLog(status, detail, trigger) {
   if (typeof writeLog !== "function") return;
   try {
-    writeLog("executePMECalculation", status, detail, trigger, "");
+    writeLog("executePMECalculation", status, detail, _pme_normalizeTriggerLabel(trigger), "");
   } catch (error) {
     console.warn("PME 写入 Log 失败: " + error.message);
   }
@@ -941,7 +948,7 @@ function _pme_writeExecutionLog(status, detail, trigger) {
  * @returns {{trigger: string, planCount: number, calculatedCount: number, warningCount: number, months: Array<string>}}
  */
 function executePMECalculation(event) {
-  var trigger = event && event.triggerType ? String(event.triggerType) : "manual";
+  var trigger = _pme_normalizeTriggerLabel(event && event.triggerType ? String(event.triggerType) : "manual");
   try {
     var source = _pme_loadSourceData();
     var calculatedRows = _pme_calculateMasterRows(source);
