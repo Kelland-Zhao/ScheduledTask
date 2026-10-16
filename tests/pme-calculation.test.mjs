@@ -70,3 +70,107 @@ test('班次排序：同日 1/2/3，班次 3 后接次日班次 1', () => {
     '2026-01-02-1',
   ]);
 });
+
+const AEM_HEADERS = [
+  'ProdDate', 'Workcenter', 'Shift', 'Prod_Hours', 'NetRuntime',
+  'PlantAvailableTime', 'CO', 'PM',
+];
+
+function aemRow(fields) {
+  return AEM_HEADERS.map(header => fields[header] ?? '');
+}
+
+test('AEM 班次聚合：同机台同日期班次的分段时间分别累加', () => {
+  const rows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', Shift: 1, Prod_Hours: 4, NetRuntime: 2, PlantAvailableTime: 8 }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', Shift: 1, Prod_Hours: 3, NetRuntime: 1, PlantAvailableTime: 8 }),
+  ];
+
+  const result = _pme_aggregateAemShifts(rows, _pme_headerIndex(AEM_HEADERS));
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0].prodHours, 7);
+  assert.equal(result[0].netRuntime, 3);
+  assert.equal(result[0].plantAvailableTime, 16);
+});
+
+test('保养窗口：空开始时间默认早班，4 个班次后从第 5 个班次开始', () => {
+  const plan = {
+    pmDate: '2026-01-21',
+    startTime: '',
+    durationHours: 32,
+  };
+
+  const result = _pme_getMaintenanceWindow(plan);
+
+  assert.deepEqual(result, {
+    startShiftKey: '2026-01-21-2',
+    endShiftKey: '2026-01-22-2',
+    afterStartShiftKey: '2026-01-22-3',
+  });
+});
+
+test('IM Before：连续生产时轮空保养前最后一个生产班次', () => {
+  const shifts = [
+    { shiftKey: '2026-01-20-1', prodDate: '2026-01-20', shift: 1, prodHours: 8 },
+    { shiftKey: '2026-01-20-2', prodDate: '2026-01-20', shift: 2, prodHours: 8 },
+    { shiftKey: '2026-01-20-3', prodDate: '2026-01-20', shift: 3, prodHours: 8 },
+    { shiftKey: '2026-01-21-2', prodDate: '2026-01-21', shift: 2, prodHours: 0 },
+  ];
+
+  const result = _pme_selectBeforeShifts('IM', shifts, '2026-01-21-2');
+
+  assert.deepEqual(result.map(row => row.shiftKey), ['2026-01-20-1', '2026-01-20-2']);
+});
+
+test('IM Before：每个生产→空班边界的生产班次都轮空，空班不进入有效生产集合', () => {
+  const shifts = [
+    { shiftKey: '2026-01-19-1', prodDate: '2026-01-19', shift: 1, prodHours: 8 },
+    { shiftKey: '2026-01-19-2', prodDate: '2026-01-19', shift: 2, prodHours: 0 },
+    { shiftKey: '2026-01-19-3', prodDate: '2026-01-19', shift: 3, prodHours: 6 },
+    { shiftKey: '2026-01-20-1', prodDate: '2026-01-20', shift: 1, prodHours: 0 },
+    { shiftKey: '2026-01-20-2', prodDate: '2026-01-20', shift: 2, prodHours: 5 },
+    { shiftKey: '2026-01-20-3', prodDate: '2026-01-20', shift: 3, prodHours: 0 },
+    { shiftKey: '2026-01-21-2', prodDate: '2026-01-21', shift: 2, prodHours: 0 },
+  ];
+
+  const result = _pme_selectBeforeShifts('IM', shifts, '2026-01-21-2');
+
+  assert.deepEqual(result, []);
+});
+
+test('TF 和 PK Before：不应用 IM 轮空规则', () => {
+  const shifts = [
+    { shiftKey: '2026-01-20-2', prodDate: '2026-01-20', shift: 2, prodHours: 8 },
+    { shiftKey: '2026-01-20-3', prodDate: '2026-01-20', shift: 3, prodHours: 0 },
+    { shiftKey: '2026-01-21-2', prodDate: '2026-01-21', shift: 2, prodHours: 0 },
+  ];
+
+  assert.deepEqual(
+    _pme_selectBeforeShifts('TF', shifts, '2026-01-21-2').map(row => row.shiftKey),
+    ['2026-01-20-2'],
+  );
+  assert.deepEqual(
+    _pme_selectBeforeShifts('PK', shifts, '2026-01-21-2').map(row => row.shiftKey),
+    ['2026-01-20-2'],
+  );
+});
+
+test('After：累计到首次达到或超过 144 小时，保留超出 144 的最后一班', () => {
+  const shifts = [
+    { shiftKey: '2026-01-22-3', prodDate: '2026-01-22', shift: 3, prodHours: 50 },
+    { shiftKey: '2026-01-23-1', prodDate: '2026-01-23', shift: 1, prodHours: 0 },
+    { shiftKey: '2026-01-23-2', prodDate: '2026-01-23', shift: 2, prodHours: 100 },
+    { shiftKey: '2026-01-23-3', prodDate: '2026-01-23', shift: 3, prodHours: 20 },
+    { shiftKey: '2026-01-24-1', prodDate: '2026-01-24', shift: 1, prodHours: 8 },
+  ];
+
+  const result = _pme_selectAfterWindow('IM', shifts, '2026-01-22-3');
+
+  assert.equal(result.status, '生产');
+  assert.equal(result.totalProdHours, 150);
+  assert.deepEqual(result.rows.map(row => row.shiftKey), [
+    '2026-01-22-3', '2026-01-23-1', '2026-01-23-2',
+  ]);
+});
