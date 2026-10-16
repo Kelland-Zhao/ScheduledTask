@@ -73,7 +73,7 @@ test('班次排序：同日 1/2/3，班次 3 后接次日班次 1', () => {
 
 const AEM_HEADERS = [
   'ProdDate', 'Workcenter', 'Shift', 'Prod_Hours', 'NetRuntime',
-  'PlantAvailableTime', 'CO', 'PM',
+  'PlantAvailableTime', 'CO', 'PM', 'process', 'WorkcenterGroup',
 ];
 
 function aemRow(fields) {
@@ -275,4 +275,81 @@ test('分母为 0 时不生成无效比例', () => {
   assert.equal(result.afterAU, null);
   assert.equal(result.afterUPDT, 0.6);
   assert.equal(result.performanceStatus, '');
+});
+
+test('来源表头校验：缺少必需字段时抛出明确错误', () => {
+  assert.throws(
+    () => _pme_requireHeaders(['ProdDate', 'Workcenter'], ['ProdDate', 'PM'], 'AEM SourceData'),
+    /AEM SourceData.*PM/,
+  );
+});
+
+test('来源覆盖校验：日期范围重叠时中止', () => {
+  assert.throws(
+    () => _pme_validateSourceCoverage([
+      { label: '2026Q1', start: '2026-01-01', end: '2026-03-31' },
+      { label: 'current', start: '2026-03-31', end: '2026-04-30' },
+    ]),
+    /重叠/,
+  );
+});
+
+test('PM 计划没有 AEM PM 记录时返回告警，不强行匹配其他记录', () => {
+  const plan = {
+    serialNo: '2026-01-02M1',
+    keyProcess: 'IM',
+    workcenter: 'M1',
+    pmDate: '2026-01-02',
+    startTime: '08:00',
+    durationHours: 8,
+  };
+  const aemRows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2026-01-02', Workcenter: 'M1', Shift: 2, PM: 0, process: 'IM' }),
+  ];
+
+  const result = _pme_calculateMasterRows({
+    pmPlans: [plan],
+    aemRows,
+    aemHeaderIndex: _pme_headerIndex(AEM_HEADERS),
+    exclusionRules: [],
+    tfTypeMap: {},
+  });
+
+  assert.equal(result.length, 0);
+  assert.match(result.warnings[0], /2026-01-02M1/);
+});
+
+test('Master Data 通过序列号幂等更新并追加，不删除未参与本次计算的历史行', () => {
+  const headers = [
+    '序列号/ Serial No.', '工序/ KeyProcess', '保养日期/ PM_Date', '机台号/ Workcenter',
+    'Production_AvailableTime_BEFORE PM', 'Production_AvailableTime_AFTER PM',
+    'AU_BEFORE PM', 'AU_AFTER PM', 'UPDT_BEFORE PM', 'UPDT_AFTER PM', 'UPDT Gap',
+    '保养月份/ YearMonth', '子工序/ SubProcess', '生产状态/ Production Status',
+    '绩效状态/ Performance Status',
+  ];
+  const oldRow = ['2026-01-01M1', 'IM', '2026-01-01', 'M1', 8, 150, 0.5, 0.6, 0.2, 0.3, 0.1, '202601', '', '生产', '差/Bad'];
+  const untouched = ['2026-01-02M2', 'PK', '2026-01-02', 'M2', 8, 150, 0.5, 0.5, 0.2, 0.2, 0, '202601', '', '生产', '好/Good'];
+  const calculated = [
+    ['2026-01-01M1', 'IM', '2026-01-01', 'M1', 16, 150, 0.4, 0.4, 0.1, 0.1, 0, '202601', '', '生产', '好/Good'],
+    ['2026-01-03M3', 'TF', '2026-01-03', 'M3', 20, 160, 0.4, 0.4, null, 0.2, null, '202601', 'AFT & USW', '生产', ''],
+  ];
+
+  const first = _pme_upsertMasterData([headers, oldRow, untouched], calculated);
+  const second = _pme_upsertMasterData(first, calculated);
+
+  assert.equal(first.length, 4);
+  assert.equal(first[1][4], 16);
+  assert.deepEqual(first[2], untouched);
+  assert.equal(first[3][0], '2026-01-03M3');
+  assert.equal(first[3][8], null);
+  assert.equal(second.length, 4);
+  assert.equal(second.filter(row => row[0] === '2026-01-03M3').length, 1);
+});
+
+test('Master Data 输出表头缺失时拒绝写入', () => {
+  assert.throws(
+    () => _pme_validateMasterDataHeaders(['序列号/ Serial No.']),
+    /Master Data/,
+  );
 });

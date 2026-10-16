@@ -1,6 +1,45 @@
 // PME（Post-PM Effectiveness）计算任务
 // 计算层与 Spreadsheet I/O 分离；内部函数统一使用 _pme_ 前缀。
 
+var _pme_CONFIG = {
+  mainSpreadsheetId: "1C7z16Ww22dfGxeqKRrBw27J-zmXXStAt2xoEYwL-V24",
+  pmSheetName: "PM Data",
+  masterDataSheetName: "Master Data",
+  kpiSummarySheetName: "KPI Summary",
+  exclusionSheetName: "KPI排除条件",
+  tfTypeSheetName: "TF Machine Type",
+  sourceSheetName: "SourceData",
+  sourceChunkRows: 10000,
+  aemSources: [
+    { label: "2025Q1", id: "1QFvpIVWS3yv11Ujoh56cYsrBffM-zaH6Bc3h8sPCdJA", start: "2025-01-01", end: "2025-03-31" },
+    { label: "2025Q2", id: "1E-Rp9v_083LXJ5DbCW1jh9Wzuh4p5gPgQP2uOn4BRvg", start: "2025-04-01", end: "2025-06-30" },
+    { label: "2025Q3", id: "1TSthgE2c4RiZYsw6MiMkPy535dXWNsJgj6zicg4-OZ0", start: "2025-07-01", end: "2025-09-30" },
+    { label: "2025Q4", id: "1yCtPUp84XcaWxVfwIusgGg_LIB9RgtjZ_kmpQ1AhSXs", start: "2025-10-01", end: "2025-12-31" },
+    { label: "2026Q1", id: "1_vWImIpjTvUfDVY-s9Ij5Ajg5h-ayQ8XUbGcN5sEO68", start: "2026-01-01", end: "2026-03-31" },
+    { label: "2026Q2", id: "1yTkY1yz4zwiXCzSI8DiHSxWYu4CmBkzsQcKH1_2_Fv8", start: "2026-04-01", end: "2026-06-30" },
+    { label: "2026Q3", id: "10o2yG9Fzvlo54e0l71KeAM-QobNvUVC3xPcBZHIinC4", start: "2026-07-01", end: "2026-09-30" },
+    { label: "2026Q4-current", id: "1pKLCZfh8sKv6EcWuEsxH6jAIsjbWHU5_aAusEODnJ_o", start: "2026-10-01", end: "" },
+  ],
+};
+
+var _pme_MASTER_HEADERS = [
+  "序列号/ Serial No.",
+  "工序/ KeyProcess",
+  "保养日期/ PM_Date",
+  "机台号/ Workcenter",
+  "Production_AvailableTime_BEFORE PM",
+  "Production_AvailableTime_AFTER PM",
+  "AU_BEFORE PM",
+  "AU_AFTER PM",
+  "UPDT_BEFORE PM",
+  "UPDT_AFTER PM",
+  "UPDT Gap",
+  "保养月份/ YearMonth",
+  "子工序/ SubProcess",
+  "生产状态/ Production Status",
+  "绩效状态/ Performance Status",
+];
+
 /**
  * 规范化机台号：去掉不影响设备身份的尾部括号后缀。
  * @param {*} value
@@ -25,6 +64,32 @@ function _pme_headerIndex(headers) {
     if (name && index[name] === undefined) index[name] = columnIndex;
   });
   return index;
+}
+
+function _pme_requireHeaders(headers, required, sourceName) {
+  var available = _pme_headerIndex(headers);
+  var missing = (required || []).filter(function (name) { return available[name] === undefined; });
+  if (missing.length > 0) {
+    throw new Error(String(sourceName || "数据源") + " 缺少必需字段: " + missing.join(", "));
+  }
+  return available;
+}
+
+function _pme_validateSourceCoverage(sources) {
+  var ranges = (sources || []).filter(function (source) {
+    return source && source.start && source.end;
+  }).slice().sort(function (a, b) {
+    return String(a.start).localeCompare(String(b.start));
+  });
+
+  for (var index = 1; index < ranges.length; index++) {
+    var previous = ranges[index - 1];
+    var current = ranges[index];
+    if (String(current.start) <= String(previous.end)) {
+      throw new Error("AEM 来源日期范围重叠: " + previous.label + " / " + current.label);
+    }
+  }
+  return true;
 }
 
 /**
@@ -418,4 +483,260 @@ function _pme_buildMasterRow(plan, metrics, subprocess, exclusionInfo) {
 function _pme_calculateKpiEligibility(row) {
   if (!Array.isArray(row)) return false;
   return row[13] === "生产" && (row[14] === "好/Good" || row[14] === "差/Bad");
+}
+
+function _pme_processMatches(planProcess, aemProcess) {
+  return String(planProcess || "").trim().toUpperCase() ===
+    String(aemProcess || "").trim().toUpperCase();
+}
+
+function _pme_findAemPmRecord(plan, aemRows, headerIndex) {
+  if (!Array.isArray(aemRows)) return null;
+  for (var rowIndex = 1; rowIndex < aemRows.length; rowIndex++) {
+    var row = aemRows[rowIndex] || [];
+    var rowDate = _pme_dateKey(_pme_getCell(row, headerIndex, "ProdDate"));
+    var rowWorkcenter = _pme_normalizeWorkcenter(_pme_getCell(row, headerIndex, "Workcenter"));
+    var rowProcess = _pme_getCell(row, headerIndex, "process");
+    if (rowDate === plan.pmDate && rowWorkcenter === plan.workcenter &&
+        _pme_processMatches(plan.keyProcess, rowProcess) &&
+        _pme_number(_pme_getCell(row, headerIndex, "PM")) > 0) {
+      return row;
+    }
+  }
+  return null;
+}
+
+function _pme_filterAemRowsForPlan(plan, aemRows, headerIndex) {
+  var filtered = [aemRows[0]];
+  for (var rowIndex = 1; rowIndex < aemRows.length; rowIndex++) {
+    var row = aemRows[rowIndex] || [];
+    var workcenter = _pme_normalizeWorkcenter(_pme_getCell(row, headerIndex, "Workcenter"));
+    var process = _pme_getCell(row, headerIndex, "process");
+    var workcenterGroup = String(_pme_getCell(row, headerIndex, "WorkcenterGroup") || "").trim();
+    if (workcenter !== plan.workcenter || !_pme_processMatches(plan.keyProcess, process)) continue;
+    if (plan.keyProcess === "IM" && (workcenterGroup === "OPK" || workcenterGroup === "Dummy")) continue;
+    filtered.push(row);
+  }
+  return filtered;
+}
+
+/**
+ * 根据已读取的标准化来源计算 Master Data 行。
+ * 返回数组本身，并在数组属性 warnings 中附带数据质量告警，保持接口为 Array<Array>。
+ * @param {{pmPlans: Array<Object>, aemRows: Array<Array<*>>, aemHeaderIndex: Object, exclusionRules: Array<Object>, tfTypeMap: Object}} source
+ * @returns {Array<Array<*>>}
+ */
+function _pme_calculateMasterRows(source) {
+  var result = [];
+  var warnings = [];
+  var aemRows = source && source.aemRows || [];
+  var headerIndex = source && source.aemHeaderIndex || _pme_headerIndex(aemRows[0] || []);
+
+  (source && source.pmPlans || []).forEach(function (plan) {
+    if (!_pme_findAemPmRecord(plan, aemRows, headerIndex)) {
+      warnings.push("未找到对应 AEM PM 记录: " + plan.serialNo);
+      return;
+    }
+
+    var planRows = _pme_filterAemRowsForPlan(plan, aemRows, headerIndex);
+    var shifts = _pme_aggregateAemShifts(planRows, headerIndex);
+    var window = _pme_getMaintenanceWindow(plan);
+    var beforeShifts = _pme_selectBeforeShifts(plan.keyProcess, shifts, window.startShiftKey);
+    var afterWindow = _pme_selectAfterWindow(plan.keyProcess, shifts, window.afterStartShiftKey);
+    var metrics = _pme_calculateMetrics(beforeShifts, afterWindow.rows);
+    var subprocess = plan.keyProcess === "TF"
+      ? String((source.tfTypeMap || {})[plan.workcenter] || "")
+      : "";
+    var excluded = _pme_isKpiExcluded(plan, source.exclusionRules || []);
+    result.push(_pme_buildMasterRow(plan, metrics, subprocess, { excluded: excluded }));
+  });
+
+  result.warnings = warnings;
+  return result;
+}
+
+/**
+ * 按序列号幂等更新 Master Data。输入和输出均含表头行。
+ * @param {Array<Array<*>>} existingRows
+ * @param {Array<Array<*>>} calculatedRows 不含表头
+ * @returns {Array<Array<*>>}
+ */
+function _pme_upsertMasterData(existingRows, calculatedRows) {
+  var current = Array.isArray(existingRows) && existingRows.length > 0
+    ? existingRows.map(function (row) { return row.slice(); })
+    : [_pme_MASTER_HEADERS.slice()];
+  var header = current[0] || [];
+  if (header.length !== _pme_MASTER_HEADERS.length ||
+      _pme_MASTER_HEADERS.some(function (name, index) { return header[index] !== name; })) {
+    throw new Error("Master Data 表头与 PME 15 列结构不一致");
+  }
+
+  var rowIndexBySerial = {};
+  for (var rowIndex = 1; rowIndex < current.length; rowIndex++) {
+    var serialNo = String(current[rowIndex][0] || "").trim();
+    if (serialNo && rowIndexBySerial[serialNo] === undefined) rowIndexBySerial[serialNo] = rowIndex;
+  }
+
+  (calculatedRows || []).forEach(function (row) {
+    var serialNo = String(row && row[0] || "").trim();
+    if (!serialNo) return;
+    var copied = row.slice();
+    if (rowIndexBySerial[serialNo] === undefined) {
+      rowIndexBySerial[serialNo] = current.length;
+      current.push(copied);
+    } else {
+      current[rowIndexBySerial[serialNo]] = copied;
+    }
+  });
+  return current;
+}
+
+function _pme_validateMasterDataHeaders(headers) {
+  if (!Array.isArray(headers) || headers.length !== _pme_MASTER_HEADERS.length ||
+      _pme_MASTER_HEADERS.some(function (name, index) { return headers[index] !== name; })) {
+    throw new Error("Master Data 表头与 PME 15 列结构不一致");
+  }
+  return true;
+}
+
+function _pme_readSheetRows(sheet, chunkRows) {
+  if (!sheet) throw new Error("目标 Sheet 不存在");
+  var lastRow = sheet.getLastRow();
+  var lastColumn = sheet.getLastColumn();
+  if (lastRow < 1 || lastColumn < 1) return [];
+
+  var header = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  var rows = [header];
+  var size = chunkRows || _pme_CONFIG.sourceChunkRows;
+  for (var startRow = 2; startRow <= lastRow; startRow += size) {
+    var count = Math.min(size, lastRow - startRow + 1);
+    var chunk = sheet.getRange(startRow, 1, count, lastColumn).getValues();
+    Array.prototype.push.apply(rows, chunk);
+  }
+  return rows;
+}
+
+function _pme_loadExclusionRules(mainSpreadsheet) {
+  var sheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.exclusionSheetName);
+  if (!sheet || sheet.getLastRow() < 1) return [];
+  var rows = _pme_readSheetRows(sheet);
+  var index = _pme_requireHeaders(rows[0], ["机台号/Workcenter", "排除的保养时间(h)", "状态"], "KPI排除条件");
+  return rows.slice(1).filter(function (row) {
+    return String(row[index["状态"]] || "").trim() === "启用";
+  }).map(function (row) {
+    return {
+      workcenter: _pme_normalizeWorkcenter(row[index["机台号/Workcenter"]]),
+      duration: _pme_number(row[index["排除的保养时间(h)"]]),
+      status: "启用",
+    };
+  }).filter(function (rule) { return rule.workcenter && rule.duration >= 0; });
+}
+
+function _pme_loadTfTypeMap(mainSpreadsheet) {
+  var sheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.tfTypeSheetName);
+  if (!sheet || sheet.getLastRow() < 1) return {};
+  var rows = _pme_readSheetRows(sheet);
+  var headers = rows[0] || [];
+  var index = _pme_headerIndex(headers);
+  var workcenterColumn = index.Workcenter;
+  if (workcenterColumn === undefined) workcenterColumn = index["机台号"];
+  var typeColumn = index["Machine Type_修正"];
+  if (typeColumn === undefined) typeColumn = index["Machine Type"];
+  if (workcenterColumn === undefined || typeColumn === undefined) return {};
+
+  var result = {};
+  rows.slice(1).forEach(function (row) {
+    var workcenter = _pme_normalizeWorkcenter(row[workcenterColumn]);
+    if (workcenter) result[workcenter] = String(row[typeColumn] || "").trim();
+  });
+  return result;
+}
+
+function _pme_readAemSources() {
+  _pme_validateSourceCoverage(_pme_CONFIG.aemSources);
+  var allRows = [];
+  var sourceHeaders = null;
+  var requiredHeaders = [
+    "ProdDate", "Workcenter", "Shift", "Prod_Hours", "NetRuntime",
+    "PlantAvailableTime", "PM", "process", "WorkcenterGroup", "CO",
+  ];
+
+  _pme_CONFIG.aemSources.forEach(function (source) {
+    var spreadsheet = SpreadsheetApp.openById(source.id);
+    var sheet = spreadsheet.getSheetByName(_pme_CONFIG.sourceSheetName);
+    if (!sheet) throw new Error("AEM 来源缺少 SourceData: " + source.label);
+    var rows = _pme_readSheetRows(sheet);
+    if (rows.length === 0) return;
+
+    var headerIndex = _pme_requireHeaders(rows[0], requiredHeaders, "AEM " + source.label + " SourceData");
+    if (!sourceHeaders) {
+      sourceHeaders = rows[0].slice();
+      allRows.push(sourceHeaders);
+    } else if (rows[0].length !== sourceHeaders.length ||
+               rows[0].some(function (name, index) { return name !== sourceHeaders[index]; })) {
+      throw new Error("AEM 来源表头不一致: " + source.label);
+    }
+    void headerIndex;
+    Array.prototype.push.apply(allRows, rows.slice(1));
+  });
+
+  return {
+    rows: allRows,
+    headerIndex: _pme_headerIndex(sourceHeaders || []),
+  };
+}
+
+/**
+ * 读取 PME 计算所需的全部来源。
+ * @returns {{pmPlans: Array<Object>, aemRows: Array<Array<*>>, aemHeaderIndex: Object, exclusionRules: Array<Object>, tfTypeMap: Object}}
+ */
+function _pme_loadSourceData() {
+  var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
+  var pmSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.pmSheetName);
+  var pmRows = _pme_readSheetRows(pmSheet);
+  var pmHeaderIndex = _pme_requireHeaders(
+    pmRows[0] || [],
+    ["类别", "状态", "开始日期", "开始时间", "AEM#", "保养时间", "工序"],
+    "PM Data",
+  );
+  var aem = _pme_readAemSources();
+
+  return {
+    pmPlans: _pme_selectPmPlans(pmRows, pmHeaderIndex),
+    aemRows: aem.rows,
+    aemHeaderIndex: aem.headerIndex,
+    exclusionRules: _pme_loadExclusionRules(mainSpreadsheet),
+    tfTypeMap: _pme_loadTfTypeMap(mainSpreadsheet),
+  };
+}
+
+function _pme_writeMasterDataRows(sheet, rows) {
+  if (!sheet) throw new Error("Master Data Sheet 不存在");
+  _pme_validateMasterDataHeaders(rows[0] || []);
+  var width = _pme_MASTER_HEADERS.length;
+  sheet.getRange(1, 1, rows.length, width).setValues(rows);
+}
+
+/**
+ * Task 4 的基础入口：完成来源读取、计算和 Master Data 更新。
+ * KPI Summary 汇总在 Task 5 接入。
+ * @param {{triggerType?: string}=} event
+ * @returns {{trigger: string, planCount: number, calculatedCount: number, warningCount: number}}
+ */
+function executePMECalculation(event) {
+  var trigger = event && event.triggerType ? String(event.triggerType) : "manual";
+  var source = _pme_loadSourceData();
+  var calculatedRows = _pme_calculateMasterRows(source);
+  var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
+  var masterDataSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.masterDataSheetName);
+  var existingRows = _pme_readSheetRows(masterDataSheet);
+  var mergedRows = _pme_upsertMasterData(existingRows, calculatedRows);
+  _pme_writeMasterDataRows(masterDataSheet, mergedRows);
+
+  return {
+    trigger: trigger,
+    planCount: source.pmPlans.length,
+    calculatedCount: calculatedRows.length,
+    warningCount: (calculatedRows.warnings || []).length,
+  };
 }
