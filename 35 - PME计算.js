@@ -40,6 +40,15 @@ var _pme_MASTER_HEADERS = [
   "绩效状态/ Performance Status",
 ];
 
+var _pme_KPI_PROCESS_CONFIG = {
+  "IM": { row2025: 2, row2026: 10 },
+  "TF": { row2025: 3, row2026: 11 },
+  "AFT & USW": { row2025: 4, row2026: 12 },
+  "HSL & Bou": { row2025: 5, row2026: 13 },
+  "Zar": { row2025: 6, row2026: 14 },
+  "PK": { row2025: 7, row2026: 15 },
+};
+
 /**
  * 规范化机台号：去掉不影响设备身份的尾部括号后缀。
  * @param {*} value
@@ -485,6 +494,157 @@ function _pme_calculateKpiEligibility(row) {
   return row[13] === "生产" && (row[14] === "好/Good" || row[14] === "差/Bad");
 }
 
+function _pme_emptyKpiBucket() {
+  return { good: 0, bad: 0, total: 0 };
+}
+
+function _pme_normalizeKpiMonths(months) {
+  return Array.from(new Set((months || []).map(function (month) {
+    return String(month == null ? "" : month).trim();
+  }).filter(function (month) {
+    return /^\d{6}$/.test(month);
+  })));
+}
+
+function _pme_isDirectKpiExcludedRow(row) {
+  if (!Array.isArray(row)) return false;
+  var process = String(row[1] == null ? "" : row[1]).trim().toUpperCase();
+  var workcenter = _pme_normalizeWorkcenter(row[3]);
+  if (/^S1DP000[1-4]$/.test(workcenter)) return true;
+  return process === "PK" && /^PK[SF]/.test(workcenter.toUpperCase());
+}
+
+function _pme_incrementKpiBucket(summary, process, yearMonth, performanceStatus) {
+  if (!summary[process] || !summary[process][yearMonth]) return;
+  var bucket = summary[process][yearMonth];
+  if (performanceStatus === "好/Good") bucket.good++;
+  if (performanceStatus === "差/Bad") bucket.bad++;
+  bucket.total = bucket.good + bucket.bad;
+}
+
+/**
+ * 汇总 Master Data 的 PME 结果。传入的 Master Data 行不含表头。
+ * @param {Array<Array<*>>} masterRows
+ * @param {Array<string>} months
+ * @param {Set<string>=} excludedSerials
+ * @returns {Object<string, Object<string, {good:number,bad:number,total:number}>>}
+ */
+function _pme_calculateKpiSummary(masterRows, months, excludedSerials) {
+  var selectedMonths = _pme_normalizeKpiMonths(months);
+  var summary = {};
+  Object.keys(_pme_KPI_PROCESS_CONFIG).forEach(function (process) {
+    summary[process] = {};
+    selectedMonths.forEach(function (month) {
+      summary[process][month] = _pme_emptyKpiBucket();
+    });
+  });
+
+  (masterRows || []).forEach(function (row) {
+    if (!_pme_calculateKpiEligibility(row)) return;
+    var yearMonth = String(row[11] == null ? "" : row[11]).trim();
+    var keyProcess = String(row[1] == null ? "" : row[1]).trim();
+    var serialNo = String(row[0] == null ? "" : row[0]).trim();
+    if (selectedMonths.indexOf(yearMonth) === -1) return;
+    if (excludedSerials && typeof excludedSerials.has === "function" && excludedSerials.has(serialNo)) return;
+    if (_pme_isDirectKpiExcludedRow(row)) return;
+    if (!_pme_KPI_PROCESS_CONFIG[keyProcess]) return;
+
+    _pme_incrementKpiBucket(summary, keyProcess, yearMonth, row[14]);
+    if (keyProcess === "TF") {
+      var subprocess = String(row[12] == null ? "" : row[12]).trim();
+      if (_pme_KPI_PROCESS_CONFIG[subprocess]) {
+        _pme_incrementKpiBucket(summary, subprocess, yearMonth, row[14]);
+      }
+    }
+  });
+
+  return summary;
+}
+
+function _pme_formatKpiPercentage(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "0.0%";
+  return (value * 100).toFixed(1).replace(/\.0$/, "") + "%";
+}
+
+function _pme_parseKpiGoal(value) {
+  if (typeof value === "string") {
+    var text = value.trim();
+    if (!text) return 0;
+    var parsedText = parseFloat(text.replace("%", ""));
+    return Number.isFinite(parsedText) ? parsedText : 0;
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return value < 1 ? value * 100 : value;
+  return 0;
+}
+
+function _pme_getKpiRow(process, year) {
+  var config = _pme_KPI_PROCESS_CONFIG[process];
+  if (!config) return null;
+  return year === 2025 ? config.row2025 : year === 2026 ? config.row2026 : null;
+}
+
+function _pme_getKpiMonthColumn(yearMonth) {
+  var text = String(yearMonth || "");
+  if (!/^\d{6}$/.test(text)) return null;
+  var month = Number(text.slice(4, 6));
+  return month >= 1 && month <= 12 ? month + 3 : null;
+}
+
+function _pme_writeKpiCell(sheet, row, column, bucket, goal) {
+  var value = bucket && bucket.total > 0
+    ? _pme_formatKpiPercentage(bucket.good / bucket.total)
+    : "-";
+  var range = sheet.getRange(row, column);
+  range.setValue(value);
+  if (value === "-") {
+    range.setBackground(null);
+    return value;
+  }
+
+  var actual = parseFloat(value.replace("%", ""));
+  range.setBackground(actual >= goal ? "#90EE90" : "#FFB6C1");
+  return value;
+}
+
+/**
+ * 将 PME 汇总写入既有 KPI Summary 布局。
+ * @param {Object} summary
+ * @param {Array<string>} months
+ * @param {Object} sheet
+ */
+function _pme_writeKpiSummary(summary, months, sheet) {
+  if (!sheet) throw new Error("KPI Summary Sheet 不存在");
+  var selectedMonths = _pme_normalizeKpiMonths(months);
+  var years = Array.from(new Set(selectedMonths.map(function (month) { return Number(month.slice(0, 4)); })));
+
+  years.forEach(function (year) {
+    Object.keys(_pme_KPI_PROCESS_CONFIG).forEach(function (process) {
+      var row = _pme_getKpiRow(process, year);
+      if (!row) return;
+      var goal = _pme_parseKpiGoal(sheet.getRange(row, 3).getValue());
+
+      selectedMonths.filter(function (month) { return Number(month.slice(0, 4)) === year; })
+        .forEach(function (month) {
+          var column = _pme_getKpiMonthColumn(month);
+          if (!column) return;
+          _pme_writeKpiCell(sheet, row, column,
+            summary[process] && summary[process][month], goal);
+        });
+
+      var ytd = _pme_emptyKpiBucket();
+      selectedMonths.filter(function (month) { return Number(month.slice(0, 4)) === year; })
+        .forEach(function (month) {
+          var bucket = summary[process] && summary[process][month];
+          if (!bucket) return;
+          ytd.good += bucket.good;
+          ytd.bad += bucket.bad;
+          ytd.total += bucket.total;
+        });
+      _pme_writeKpiCell(sheet, row, 16, ytd, goal);
+    });
+  });
+}
+
 function _pme_processMatches(planProcess, aemProcess) {
   return String(planProcess || "").trim().toUpperCase() ===
     String(aemProcess || "").trim().toUpperCase();
@@ -717,11 +877,36 @@ function _pme_writeMasterDataRows(sheet, rows) {
   sheet.getRange(1, 1, rows.length, width).setValues(rows);
 }
 
+function _pme_buildExcludedSerials(pmPlans, exclusionRules) {
+  var excluded = new Set();
+  (pmPlans || []).forEach(function (plan) {
+    if (_pme_isKpiExcluded(plan, exclusionRules || [])) excluded.add(plan.serialNo);
+  });
+  return excluded;
+}
+
+function _pme_generateCurrentMonths() {
+  var now = new Date();
+  var year = now.getFullYear();
+  var currentMonth = now.getMonth() + 1;
+  var months = [];
+  for (var month = 1; month <= currentMonth; month++) {
+    months.push(String(year) + String(month).padStart(2, "0"));
+  }
+  return months;
+}
+
+function _pme_getExecutionMonths(event) {
+  if (event && Array.isArray(event.months) && event.months.length > 0) {
+    return _pme_normalizeKpiMonths(event.months);
+  }
+  return _pme_generateCurrentMonths();
+}
+
 /**
- * Task 4 的基础入口：完成来源读取、计算和 Master Data 更新。
- * KPI Summary 汇总在 Task 5 接入。
+ * PME 入口：完成来源读取、计算、Master Data 更新和 KPI Summary 汇总。
  * @param {{triggerType?: string}=} event
- * @returns {{trigger: string, planCount: number, calculatedCount: number, warningCount: number}}
+ * @returns {{trigger: string, planCount: number, calculatedCount: number, warningCount: number, months: Array<string>}}
  */
 function executePMECalculation(event) {
   var trigger = event && event.triggerType ? String(event.triggerType) : "manual";
@@ -729,14 +914,24 @@ function executePMECalculation(event) {
   var calculatedRows = _pme_calculateMasterRows(source);
   var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
   var masterDataSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.masterDataSheetName);
+  var kpiSummarySheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.kpiSummarySheetName);
+  if (!masterDataSheet) throw new Error("Master Data Sheet 不存在");
+  if (!kpiSummarySheet) throw new Error("KPI Summary Sheet 不存在");
+
   var existingRows = _pme_readSheetRows(masterDataSheet);
   var mergedRows = _pme_upsertMasterData(existingRows, calculatedRows);
+  var months = _pme_getExecutionMonths(event);
+  var excludedSerials = _pme_buildExcludedSerials(source.pmPlans, source.exclusionRules);
+  var summary = _pme_calculateKpiSummary(mergedRows.slice(1), months, excludedSerials);
+
   _pme_writeMasterDataRows(masterDataSheet, mergedRows);
+  _pme_writeKpiSummary(summary, months, kpiSummarySheet);
 
   return {
     trigger: trigger,
     planCount: source.pmPlans.length,
     calculatedCount: calculatedRows.length,
     warningCount: (calculatedRows.warnings || []).length,
+    months: months,
   };
 }

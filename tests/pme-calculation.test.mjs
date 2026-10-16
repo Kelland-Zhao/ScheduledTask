@@ -353,3 +353,140 @@ test('Master Data 输出表头缺失时拒绝写入', () => {
     /Master Data/,
   );
 });
+
+function masterRow(fields) {
+  const row = new Array(15).fill('');
+  row[0] = fields.serialNo || '';
+  row[1] = fields.keyProcess || '';
+  row[3] = fields.workcenter || '';
+  row[11] = fields.yearMonth || '';
+  row[12] = fields.subProcess || '';
+  row[13] = fields.productionStatus || '';
+  row[14] = fields.performanceStatus || '';
+  return row;
+}
+
+test('KPI 汇总：只统计生产且 Good/Bad 的行，并同步统计 TF 子工序', () => {
+  const rows = [
+    masterRow({ serialNo: 'IM-G', keyProcess: 'IM', yearMonth: '202601', productionStatus: '生产', performanceStatus: '好/Good' }),
+    masterRow({ serialNo: 'IM-B', keyProcess: 'IM', yearMonth: '202601', productionStatus: '生产', performanceStatus: '差/Bad' }),
+    masterRow({ serialNo: 'TF-A', keyProcess: 'TF', subProcess: 'AFT & USW', yearMonth: '202601', productionStatus: '生产', performanceStatus: '好/Good' }),
+    masterRow({ serialNo: 'TF-H', keyProcess: 'TF', subProcess: 'HSL & Bou', yearMonth: '202601', productionStatus: '生产', performanceStatus: '差/Bad' }),
+    masterRow({ serialNo: 'TF-Z', keyProcess: 'TF', subProcess: 'Zar', yearMonth: '202601', productionStatus: '生产', performanceStatus: '好/Good' }),
+    masterRow({ serialNo: 'PK-G', keyProcess: 'PK', yearMonth: '202601', productionStatus: '生产', performanceStatus: '好/Good' }),
+    masterRow({ serialNo: 'NO-144', keyProcess: 'IM', yearMonth: '202601', productionStatus: '未达144', performanceStatus: '' }),
+  ];
+
+  const summary = _pme_calculateKpiSummary(rows, ['202601'], new Set(['TF-Z']));
+
+  assert.deepEqual(summary.IM['202601'], { good: 1, bad: 1, total: 2 });
+  assert.deepEqual(summary.TF['202601'], { good: 1, bad: 1, total: 2 });
+  assert.deepEqual(summary.PK['202601'], { good: 1, bad: 0, total: 1 });
+  assert.deepEqual(summary['AFT & USW']['202601'], { good: 1, bad: 0, total: 1 });
+  assert.deepEqual(summary['HSL & Bou']['202601'], { good: 0, bad: 1, total: 1 });
+  assert.deepEqual(summary.Zar['202601'], { good: 0, bad: 0, total: 0 });
+});
+
+test('KPI Summary 写入：使用既有 2026 行列、Goal 和 YTD，并清理无数据月份', () => {
+  const writes = [];
+  const backgrounds = [];
+  const goalByRow = { 10: '60%', 11: '50%', 12: '60%', 13: '60%', 14: '60%', 15: '60%' };
+  const sheet = {
+    getRange(row, column) {
+      return {
+        getValue() { return column === 3 ? goalByRow[row] || '' : ''; },
+        setValue(value) { writes.push({ row, column, value }); },
+        setBackground(value) { backgrounds.push({ row, column, value }); },
+      };
+    },
+  };
+  const summary = _pme_calculateKpiSummary([
+    masterRow({ serialNo: 'IM-G', keyProcess: 'IM', yearMonth: '202601', productionStatus: '生产', performanceStatus: '好/Good' }),
+    masterRow({ serialNo: 'IM-B', keyProcess: 'IM', yearMonth: '202601', productionStatus: '生产', performanceStatus: '差/Bad' }),
+  ], ['202601', '202602']);
+
+  _pme_writeKpiSummary(summary, ['202601', '202602'], sheet);
+
+  assert.deepEqual(writes.find(item => item.row === 10 && item.column === 4), { row: 10, column: 4, value: '50%' });
+  assert.deepEqual(writes.find(item => item.row === 10 && item.column === 5), { row: 10, column: 5, value: '-' });
+  assert.deepEqual(writes.find(item => item.row === 10 && item.column === 16), { row: 10, column: 16, value: '50%' });
+  assert.ok(backgrounds.some(item => item.row === 10 && item.column === 4 && item.value === '#FFB6C1'));
+  assert.ok(backgrounds.some(item => item.row === 10 && item.column === 5 && item.value === null));
+});
+
+test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总并返回执行摘要', () => {
+  const masterWrites = [];
+  const kpiWrites = [];
+
+  function memorySheet(name, rows, writes) {
+    return {
+      getLastRow() { return rows.length; },
+      getLastColumn() { return rows[0] ? rows[0].length : 0; },
+      getRange(row, column, numRows = 1, numColumns = 1) {
+        return {
+          getValues() {
+            return rows.slice(row - 1, row - 1 + numRows)
+              .map(item => item.slice(column - 1, column - 1 + numColumns));
+          },
+          getValue() {
+            if (name === 'KPI Summary' && column === 3) return '60%';
+            return rows[row - 1] && rows[row - 1][column - 1];
+          },
+          setValues(values) {
+            writes.push({ name, row, column, values });
+          },
+          setValue(value) {
+            writes.push({ name, row, column, value });
+          },
+          setBackground(value) {
+            writes.push({ name, row, column, background: value });
+          },
+        };
+      },
+    };
+  }
+
+  const pmRows = [
+    ['类别', '状态', '开始日期', '开始时间', 'AEM#', '保养时间', '工序'],
+    ['PM', '已确认', '2026-01-01', '08:00', 'M1', 8, 'INJ'],
+  ];
+  const aemRows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', Shift: 1, Prod_Hours: 8, NetRuntime: 4, PlantAvailableTime: 8, PM: 0, process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', Shift: 2, Prod_Hours: 0, NetRuntime: 0, PlantAvailableTime: 0, PM: 1, process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-02', Workcenter: 'M1', Shift: 1, Prod_Hours: 48, NetRuntime: 24, PlantAvailableTime: 48, PM: 0, process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-02', Workcenter: 'M1', Shift: 2, Prod_Hours: 48, NetRuntime: 24, PlantAvailableTime: 48, PM: 0, process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-02', Workcenter: 'M1', Shift: 3, Prod_Hours: 48, NetRuntime: 24, PlantAvailableTime: 48, PM: 0, process: 'IM' }),
+  ];
+  const mainSheets = new Map();
+  const mainSpreadsheet = {
+    getSheetByName(name) { return mainSheets.get(name) || null; },
+  };
+  mainSheets.set('PM Data', memorySheet('PM Data', pmRows, []));
+  mainSheets.set('Master Data', memorySheet('Master Data', [_pme_MASTER_HEADERS], masterWrites));
+  mainSheets.set('KPI Summary', memorySheet('KPI Summary', [new Array(16).fill('')], kpiWrites));
+  const aemSpreadsheet = { getSheetByName() { return memorySheet('SourceData', aemRows, []); } };
+
+  const previousSpreadsheetApp = globalThis.SpreadsheetApp;
+  const previousSources = _pme_CONFIG.aemSources;
+  _pme_CONFIG.aemSources = [previousSources[0]];
+  globalThis.SpreadsheetApp = {
+    openById(id) { return id === _pme_CONFIG.mainSpreadsheetId ? mainSpreadsheet : aemSpreadsheet; },
+  };
+
+  try {
+    const result = executePMECalculation({ triggerType: '手动', months: ['202601'] });
+    assert.deepEqual(result, {
+      trigger: '手动',
+      planCount: 1,
+      calculatedCount: 1,
+      warningCount: 0,
+      months: ['202601'],
+    });
+    assert.ok(masterWrites.some(item => item.name === 'Master Data' && item.values.length === 2));
+    assert.ok(kpiWrites.some(item => item.name === 'KPI Summary' && item.row === 10 && item.column === 4));
+  } finally {
+    _pme_CONFIG.aemSources = previousSources;
+    globalThis.SpreadsheetApp = previousSpreadsheetApp;
+  }
+});
