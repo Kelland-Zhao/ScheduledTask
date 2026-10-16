@@ -759,6 +759,19 @@ function _pme_validateMasterDataHeaders(headers) {
   return true;
 }
 
+/**
+ * 追加大量行时使用逐行 push，避免将整批行展开为函数参数导致栈溢出。
+ * @param {Array<Array<*>>} target
+ * @param {Array<Array<*>>} additions
+ */
+function _pme_appendRows(target, additions) {
+  if (!Array.isArray(target) || !Array.isArray(additions)) return target;
+  for (var index = 0; index < additions.length; index++) {
+    target.push(additions[index]);
+  }
+  return target;
+}
+
 function _pme_readSheetRows(sheet, chunkRows) {
   if (!sheet) throw new Error("目标 Sheet 不存在");
   var lastRow = sheet.getLastRow();
@@ -771,7 +784,7 @@ function _pme_readSheetRows(sheet, chunkRows) {
   for (var startRow = 2; startRow <= lastRow; startRow += size) {
     var count = Math.min(size, lastRow - startRow + 1);
     var chunk = sheet.getRange(startRow, 1, count, lastColumn).getValues();
-    Array.prototype.push.apply(rows, chunk);
+    _pme_appendRows(rows, chunk);
   }
   return rows;
 }
@@ -860,7 +873,7 @@ function _pme_readAemSources() {
       throw new Error("AEM 来源表头不一致: " + source.label);
     }
     void headerIndex;
-    Array.prototype.push.apply(allRows, sourceRows.slice(1));
+    _pme_appendRows(allRows, sourceRows.slice(1));
   });
 
   return {

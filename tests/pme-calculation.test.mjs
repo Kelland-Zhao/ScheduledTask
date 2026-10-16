@@ -7,6 +7,17 @@ const modulePath = new URL('../35 - PME计算.js', import.meta.url);
 const moduleCode = fs.existsSync(modulePath) ? fs.readFileSync(modulePath, 'utf8') : '';
 (0, eval)(moduleCode);
 
+test('大批量行追加：不因参数展开触发调用栈溢出', () => {
+  const target = [];
+  const additions = new Array(134036).fill(null).map((_, index) => [index]);
+
+  _pme_appendRows(target, additions);
+
+  assert.equal(target.length, additions.length);
+  assert.deepEqual(target[0], [0]);
+  assert.deepEqual(target[target.length - 1], [134035]);
+});
+
 test('机台号标准化：去除 SW 后缀', () => {
   assert.equal(_pme_normalizeWorkcenter(' T2GB0105【SW】 '), 'T2GB0105');
 });
