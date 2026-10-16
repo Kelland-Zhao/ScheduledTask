@@ -106,6 +106,22 @@ test('AEM 班次聚合：同机台同日期班次的分段时间分别累加', (
   assert.equal(result[0].plantAvailableTime, 16);
 });
 
+test('AEM 计划索引：按机台和工序分组，并排除 IM 的 OPK/Dummy 行', () => {
+  const rows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'IM', WorkcenterGroup: 'Main' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'IM', WorkcenterGroup: 'OPK' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'TF', WorkcenterGroup: 'Main' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M2', process: 'IM', WorkcenterGroup: 'Dummy' }),
+  ];
+
+  const index = _pme_buildAemPlanIndex(rows, _pme_headerIndex(AEM_HEADERS));
+
+  assert.equal(index['M1\u0001IM'].length, 1);
+  assert.equal(index['M1\u0001TF'].length, 1);
+  assert.equal(index['M2\u0001IM'], undefined);
+});
+
 test('保养窗口：空开始时间默认早班，4 个班次后从第 5 个班次开始', () => {
   const plan = {
     pmDate: '2026-01-21',

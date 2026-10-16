@@ -650,6 +650,42 @@ function _pme_processMatches(planProcess, aemProcess) {
     String(aemProcess || "").trim().toUpperCase();
 }
 
+function _pme_aemPlanIndexKey(workcenter, process) {
+  return _pme_normalizeWorkcenter(workcenter) + "\u0001" +
+    String(process == null ? "" : process).trim().toUpperCase();
+}
+
+/**
+ * 只遍历一次 AEM，建立「机台号 + 工序」索引，避免每条 PM 计划重复扫描全量 AEM。
+ * @param {Array<Array<*>>} aemRows 含表头行
+ * @param {Object<string, number>} headerIndex
+ * @returns {Object<string, Array<Array<*>>>}
+ */
+function _pme_buildAemPlanIndex(aemRows, headerIndex) {
+  var index = {};
+  if (!Array.isArray(aemRows)) return index;
+
+  for (var rowIndex = 1; rowIndex < aemRows.length; rowIndex++) {
+    var row = aemRows[rowIndex] || [];
+    var workcenter = _pme_normalizeWorkcenter(_pme_getCell(row, headerIndex, "Workcenter"));
+    var process = String(_pme_getCell(row, headerIndex, "process") || "").trim().toUpperCase();
+    var workcenterGroup = String(_pme_getCell(row, headerIndex, "WorkcenterGroup") || "").trim();
+    if (!workcenter || !process) continue;
+    if (process === "IM" && (workcenterGroup === "OPK" || workcenterGroup === "Dummy")) continue;
+
+    var key = _pme_aemPlanIndexKey(workcenter, process);
+    if (!index[key]) index[key] = [];
+    index[key].push(row);
+  }
+  return index;
+}
+
+function _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow) {
+  var key = _pme_aemPlanIndexKey(plan.workcenter, plan.keyProcess);
+  var rows = aemPlanIndex && aemPlanIndex[key] ? aemPlanIndex[key] : [];
+  return [headerRow].concat(rows);
+}
+
 function _pme_findAemPmRecord(plan, aemRows, headerIndex) {
   if (!Array.isArray(aemRows)) return null;
   for (var rowIndex = 1; rowIndex < aemRows.length; rowIndex++) {
@@ -691,14 +727,16 @@ function _pme_calculateMasterRows(source) {
   var warnings = [];
   var aemRows = source && source.aemRows || [];
   var headerIndex = source && source.aemHeaderIndex || _pme_headerIndex(aemRows[0] || []);
+  var aemPlanIndex = source && source.aemPlanIndex || _pme_buildAemPlanIndex(aemRows, headerIndex);
+  var headerRow = aemRows[0] || [];
 
   (source && source.pmPlans || []).forEach(function (plan) {
-    if (!_pme_findAemPmRecord(plan, aemRows, headerIndex)) {
+    var planRows = _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow);
+    if (!_pme_findAemPmRecord(plan, planRows, headerIndex)) {
       warnings.push("未找到对应 AEM PM 记录: " + plan.serialNo);
       return;
     }
 
-    var planRows = _pme_filterAemRowsForPlan(plan, aemRows, headerIndex);
     var shifts = _pme_aggregateAemShifts(planRows, headerIndex);
     var window = _pme_getMaintenanceWindow(plan);
     var beforeShifts = _pme_selectBeforeShifts(plan.keyProcess, shifts, window.startShiftKey);
