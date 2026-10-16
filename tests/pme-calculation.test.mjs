@@ -270,7 +270,7 @@ test('KPI 排除：PKS、PKF、S1DP 四台设备和启用规则均被排除', ()
   assert.equal(_pme_isKpiExcluded(plan('IM', 'H2FCS506', 16), rules), false);
 });
 
-test('Master Data 行：被排除记录仍可生成 15 列明细，但不具备 KPI 资格', () => {
+test('已排除计划的明细行构造仍保持 15 列，但不具备 KPI 资格', () => {
   const metrics = _pme_calculateMetrics(
     [metricShift({ prodHours: 100, netRuntime: 70, plantAvailableTime: 80 })],
     [metricShift({ prodHours: 150, netRuntime: 120, plantAvailableTime: 120 })],
@@ -289,6 +289,33 @@ test('Master Data 行：被排除记录仍可生成 15 列明细，但不具备 
   assert.equal(row[14], '好/Good');
   assert.equal(_pme_calculateKpiEligibility(row), true);
   assert.equal(_pme_isKpiExcluded(plan, []), true);
+});
+
+test('Master Data 计算结果不生成 S1DP0001–0004 记录', () => {
+  const result = _pme_calculateMasterRows({
+    pmPlans: [{
+      serialNo: '2026-01-02S1DP0001',
+      keyProcess: 'IM',
+      pmDate: '2026-01-02',
+      workcenter: 'S1DP0001',
+      startTime: '08:00',
+      durationHours: 8,
+    }, {
+      serialNo: '2026-01-02M1',
+      keyProcess: 'IM',
+      pmDate: '2026-01-02',
+      workcenter: 'M1',
+      startTime: '08:00',
+      durationHours: 8,
+    }],
+    aemRows: [AEM_HEADERS],
+    aemHeaderIndex: _pme_headerIndex(AEM_HEADERS),
+    exclusionRules: [],
+    tfTypeMap: {},
+  });
+
+  assert.equal(result.length, 0);
+  assert.deepEqual(result.warnings, ['未找到对应 AEM PM 记录: 2026-01-02M1']);
 });
 
 test('分母为 0 时不生成无效比例', () => {

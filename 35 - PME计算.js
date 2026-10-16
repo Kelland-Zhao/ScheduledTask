@@ -455,6 +455,17 @@ function _pme_isKpiExcluded(plan, exclusionRules) {
 }
 
 /**
+ * 判断计划是否完全不生成 Master Data 明细。
+ * 目前仅豁免员工维护的 S1DP0001–0004；其他 KPI 排除规则仍保留明细。
+ * @param {{workcenter: string}=} plan
+ * @returns {boolean}
+ */
+function _pme_isMasterDataExcluded(plan) {
+  var workcenter = _pme_normalizeWorkcenter(plan && plan.workcenter);
+  return /^S1DP000[1-4]$/.test(workcenter);
+}
+
+/**
  * Master Data 的 15 列标准行。
  * @param {Object} plan
  * @param {Object} metrics
@@ -731,6 +742,8 @@ function _pme_calculateMasterRows(source) {
   var headerRow = aemRows[0] || [];
 
   (source && source.pmPlans || []).forEach(function (plan) {
+    if (_pme_isMasterDataExcluded(plan)) return;
+
     var planRows = _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow);
     if (!_pme_findAemPmRecord(plan, planRows, headerIndex)) {
       warnings.push("未找到对应 AEM PM 记录: " + plan.serialNo);
