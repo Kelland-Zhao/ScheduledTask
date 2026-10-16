@@ -184,6 +184,20 @@ test('TF 和 PK Before：不应用 IM 轮空规则', () => {
   );
 });
 
+test('Before：从 PM 前最近班次向前累计，首次达到或超过 144 小时即停止', () => {
+  const shifts = [
+    { shiftKey: '2026-01-20-1', prodDate: '2026-01-20', shift: 1, prodHours: 50 },
+    { shiftKey: '2026-01-20-2', prodDate: '2026-01-20', shift: 2, prodHours: 80 },
+    { shiftKey: '2026-01-20-3', prodDate: '2026-01-20', shift: 3, prodHours: 70 },
+    { shiftKey: '2026-01-21-2', prodDate: '2026-01-21', shift: 2, prodHours: 0 },
+  ];
+
+  const result = _pme_selectBeforeShifts('TF', shifts, '2026-01-21-2');
+
+  assert.deepEqual(result.map(row => row.shiftKey), ['2026-01-20-2', '2026-01-20-3']);
+  assert.equal(result.reduce((total, row) => total + row.prodHours, 0), 150);
+});
+
 test('After：累计到首次达到或超过 144 小时，保留超出 144 的最后一班', () => {
   const shifts = [
     { shiftKey: '2026-01-22-3', prodDate: '2026-01-22', shift: 3, prodHours: 50 },
@@ -224,6 +238,28 @@ test('指标公式：AU 使用 PlantAvailableTime，UPDT 使用 Prod_Hours，Gap
   assert.equal(result.beforeUPDT, 0.3);
   assert.equal(result.afterUPDT, 0.4);
   assert.ok(Math.abs(result.updtGap - 0.1) < 1e-12);
+});
+
+test('Master Data 行：Before/After Production Available Time 四舍五入为整数', () => {
+  const row = _pme_buildMasterRow(
+    { serialNo: '2026-01-01M1', keyProcess: 'IM', pmDate: '2026-01-01', workcenter: 'M1' },
+    {
+      beforeProductionAvailableTime: 144.6,
+      afterProductionAvailableTime: 150.4,
+      beforeAU: 0.8,
+      afterAU: 0.8,
+      beforeUPDT: 0.2,
+      afterUPDT: 0.21,
+      updtGap: 0.01,
+      productionStatus: '生产',
+      performanceStatus: '差/Bad',
+    },
+    '',
+  );
+
+  assert.equal(row[4], 145);
+  assert.equal(row[5], 150);
+  assert.equal(row[10], 0.01);
 });
 
 test('绩效判定：达到 144 且 After UPDT 不高于 Before 时为 Good', () => {
@@ -479,10 +515,12 @@ test('Master Data 新增记录的技术员字段为空，写入只覆盖 A:O', (
   assert.deepEqual(merged[1].slice(15), ['', '', '']);
 
   const writes = [];
+  const formats = [];
   const sheet = {
     getRange(row, column, numRows, numColumns) {
       return {
         setValues(values) { writes.push({ row, column, numRows, numColumns, values }); },
+        setNumberFormat(format) { formats.push({ row, column, numRows, numColumns, format }); },
       };
     },
   };
@@ -495,6 +533,10 @@ test('Master Data 新增记录的技术员字段为空，写入只覆盖 A:O', (
     numColumns: 15,
     values: [headers.slice(0, 15), calculated[0]],
   });
+  assert.deepEqual(formats, [
+    { row: 2, column: 5, numRows: 1, numColumns: 2, format: '0' },
+    { row: 2, column: 11, numRows: 1, numColumns: 1, format: '0.00%' },
+  ]);
 });
 
 function masterRow(fields) {
@@ -582,6 +624,7 @@ test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总�
           setValue(value) {
             writes.push({ name, row, column, value });
           },
+          setNumberFormat() {},
           setBackground(value) {
             writes.push({ name, row, column, background: value });
           },

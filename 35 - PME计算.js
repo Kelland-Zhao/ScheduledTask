@@ -324,20 +324,32 @@ function _pme_selectBeforeShifts(process, shifts, pmStartShiftKey) {
     .sort(_pme_compareShift);
 
   var positive = before.filter(function (shift) { return shift.prodHours > 0; });
-  if (String(process || "").toUpperCase() !== "IM") return positive;
-
   var skipped = {};
-  if (positive.length > 0) skipped[positive[positive.length - 1].shiftKey] = true;
+  if (String(process || "").toUpperCase() === "IM") {
+    if (positive.length > 0) skipped[positive[positive.length - 1].shiftKey] = true;
 
-  for (var index = 1; index < before.length; index++) {
-    var previous = before[index - 1];
-    var current = before[index];
-    if (previous.prodHours > 0 && current.prodHours === 0) {
-      skipped[previous.shiftKey] = true;
+    for (var index = 1; index < before.length; index++) {
+      var previous = before[index - 1];
+      var current = before[index];
+      if (previous.prodHours > 0 && current.prodHours === 0) {
+        skipped[previous.shiftKey] = true;
+      }
     }
   }
 
-  return positive.filter(function (shift) { return !skipped[shift.shiftKey]; });
+  positive = positive.filter(function (shift) { return !skipped[shift.shiftKey]; });
+
+  // 与 AFTER PM 对称：从 PM 前最近的有效班次向前累计，
+  // 首次达到或超过 144 小时后停止，最终恢复为时间正序。
+  var selected = [];
+  var totalProdHours = 0;
+  for (var positiveIndex = positive.length - 1; positiveIndex >= 0; positiveIndex--) {
+    var shift = positive[positiveIndex];
+    selected.unshift(shift);
+    totalProdHours += _pme_number(shift.prodHours);
+    if (totalProdHours >= 144) break;
+  }
+  return selected;
 }
 
 /**
@@ -480,8 +492,8 @@ function _pme_buildMasterRow(plan, metrics, subprocess, exclusionInfo) {
     plan.keyProcess || "",
     plan.pmDate || "",
     plan.workcenter || "",
-    metrics.beforeProductionAvailableTime,
-    metrics.afterProductionAvailableTime,
+    Math.round(_pme_number(metrics.beforeProductionAvailableTime)),
+    Math.round(_pme_number(metrics.afterProductionAvailableTime)),
     metrics.beforeAU,
     metrics.afterAU,
     metrics.beforeUPDT,
@@ -972,6 +984,11 @@ function _pme_writeMasterDataRows(sheet, rows) {
     return _pme_mergeMasterDataRow(row, null, width);
   });
   sheet.getRange(1, 1, values.length, width).setValues(values);
+  var dataRowCount = values.length - 1;
+  if (dataRowCount > 0) {
+    sheet.getRange(2, 5, dataRowCount, 2).setNumberFormat("0");
+    sheet.getRange(2, 11, dataRowCount, 1).setNumberFormat("0.00%");
+  }
 }
 
 function _pme_buildExcludedSerials(pmPlans, exclusionRules) {
