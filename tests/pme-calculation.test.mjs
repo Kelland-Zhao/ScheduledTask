@@ -174,3 +174,105 @@ test('After：累计到首次达到或超过 144 小时，保留超出 144 的�
     '2026-01-22-3', '2026-01-23-1', '2026-01-23-2',
   ]);
 });
+
+function metricShift(fields) {
+  return {
+    shiftKey: fields.shiftKey || '2026-01-01-1',
+    prodDate: fields.prodDate || '2026-01-01',
+    shift: fields.shift || 1,
+    prodHours: fields.prodHours ?? 0,
+    netRuntime: fields.netRuntime ?? 0,
+    plantAvailableTime: fields.plantAvailableTime ?? 0,
+  };
+}
+
+test('指标公式：AU 使用 PlantAvailableTime，UPDT 使用 Prod_Hours，Gap 为 After 减 Before', () => {
+  const before = [metricShift({ prodHours: 100, netRuntime: 70, plantAvailableTime: 80 })];
+  const after = [metricShift({ prodHours: 150, netRuntime: 90, plantAvailableTime: 120 })];
+
+  const result = _pme_calculateMetrics(before, after);
+
+  assert.equal(result.beforeAU, 0.875);
+  assert.equal(result.afterAU, 0.75);
+  assert.equal(result.beforeUPDT, 0.3);
+  assert.equal(result.afterUPDT, 0.4);
+  assert.ok(Math.abs(result.updtGap - 0.1) < 1e-12);
+});
+
+test('绩效判定：达到 144 且 After UPDT 不高于 Before 时为 Good', () => {
+  const result = _pme_calculateMetrics(
+    [metricShift({ prodHours: 100, netRuntime: 70, plantAvailableTime: 80 })],
+    [metricShift({ prodHours: 150, netRuntime: 120, plantAvailableTime: 120 })],
+  );
+
+  assert.equal(result.productionStatus, '生产');
+  assert.equal(result.performanceStatus, '好/Good');
+});
+
+test('未达 144 或 Before UPDT 缺失时不强行生成绩效状态', () => {
+  const notEnough = _pme_calculateMetrics(
+    [metricShift({ prodHours: 100, netRuntime: 70, plantAvailableTime: 80 })],
+    [metricShift({ prodHours: 100, netRuntime: 60, plantAvailableTime: 120 })],
+  );
+  const missingBefore = _pme_calculateMetrics(
+    [],
+    [metricShift({ prodHours: 150, netRuntime: 60, plantAvailableTime: 120 })],
+  );
+
+  assert.equal(notEnough.productionStatus, '未达144');
+  assert.equal(notEnough.performanceStatus, '');
+  assert.equal(missingBefore.productionStatus, '生产');
+  assert.equal(missingBefore.performanceStatus, '');
+});
+
+test('日期切点：20 日归当月，21 日归下月', () => {
+  assert.equal(_pme_getYearMonth('2026-09-20'), '202609');
+  assert.equal(_pme_getYearMonth('2026-09-21'), '202610');
+  assert.equal(_pme_getYearMonth('2026-09-26'), '202610');
+});
+
+test('KPI 排除：PKS、PKF、S1DP 四台设备和启用规则均被排除', () => {
+  const rules = [{ workcenter: 'H2FCS506', duration: 8 }];
+  const plan = (keyProcess, workcenter, durationHours) => ({ keyProcess, workcenter, durationHours });
+
+  assert.equal(_pme_isKpiExcluded(plan('PK', 'PKS001', 8), rules), true);
+  assert.equal(_pme_isKpiExcluded(plan('PK', 'PKF001', 8), rules), true);
+  assert.equal(_pme_isKpiExcluded(plan('IM', 'S1DP0001', 8), rules), true);
+  assert.equal(_pme_isKpiExcluded(plan('IM', 'S1DP0004', 8), rules), true);
+  assert.equal(_pme_isKpiExcluded(plan('IM', 'H2FCS506', 8), rules), true);
+  assert.equal(_pme_isKpiExcluded(plan('IM', 'H2FCS506', 16), rules), false);
+});
+
+test('Master Data 行：被排除记录仍可生成 15 列明细，但不具备 KPI 资格', () => {
+  const metrics = _pme_calculateMetrics(
+    [metricShift({ prodHours: 100, netRuntime: 70, plantAvailableTime: 80 })],
+    [metricShift({ prodHours: 150, netRuntime: 120, plantAvailableTime: 120 })],
+  );
+  const plan = {
+    serialNo: '2026-09-26PKS001',
+    keyProcess: 'PK',
+    pmDate: '2026-09-26',
+    workcenter: 'PKS001',
+  };
+
+  const row = _pme_buildMasterRow(plan, metrics, '', { excluded: true });
+
+  assert.equal(row.length, 15);
+  assert.equal(row[13], '生产');
+  assert.equal(row[14], '好/Good');
+  assert.equal(_pme_calculateKpiEligibility(row), true);
+  assert.equal(_pme_isKpiExcluded(plan, []), true);
+});
+
+test('分母为 0 时不生成无效比例', () => {
+  const result = _pme_calculateMetrics(
+    [metricShift({ prodHours: 0, netRuntime: 1, plantAvailableTime: 0 })],
+    [metricShift({ prodHours: 150, netRuntime: 60, plantAvailableTime: 0 })],
+  );
+
+  assert.equal(result.beforeAU, null);
+  assert.equal(result.beforeUPDT, null);
+  assert.equal(result.afterAU, null);
+  assert.equal(result.afterUPDT, 0.6);
+  assert.equal(result.performanceStatus, '');
+});

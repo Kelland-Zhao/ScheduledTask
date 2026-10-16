@@ -291,3 +291,131 @@ function _pme_selectAfterWindow(process, shifts, afterStartShiftKey) {
 
   return { rows: selected, status: "未达144", totalProdHours: totalProdHours };
 }
+
+function _pme_sumShiftValues(shifts) {
+  return (shifts || []).reduce(function (result, shift) {
+    result.prodHours += _pme_number(shift.prodHours);
+    result.netRuntime += _pme_number(shift.netRuntime);
+    result.plantAvailableTime += _pme_number(shift.plantAvailableTime);
+    return result;
+  }, { prodHours: 0, netRuntime: 0, plantAvailableTime: 0 });
+}
+
+function _pme_ratio(numerator, denominator) {
+  return denominator > 0 ? numerator / denominator : null;
+}
+
+function _pme_metricValue(value) {
+  return value === null || value === undefined || !Number.isFinite(value) ? null : value;
+}
+
+/**
+ * 计算 Before/After 的累计时间、AU、UPDT 和最终状态。
+ * @param {Array<Object>} beforeShifts
+ * @param {Array<Object>} afterShifts
+ * @returns {Object}
+ */
+function _pme_calculateMetrics(beforeShifts, afterShifts) {
+  var before = _pme_sumShiftValues(beforeShifts);
+  var after = _pme_sumShiftValues(afterShifts);
+  var beforeAU = _pme_ratio(before.netRuntime, before.plantAvailableTime);
+  var afterAU = _pme_ratio(after.netRuntime, after.plantAvailableTime);
+  var beforeUPDT = _pme_ratio(before.prodHours - before.netRuntime, before.prodHours);
+  var afterUPDT = _pme_ratio(after.prodHours - after.netRuntime, after.prodHours);
+  var productionStatus = after.prodHours >= 144 ? "生产" : "未达144";
+  var updtGap = beforeUPDT !== null && afterUPDT !== null ? afterUPDT - beforeUPDT : null;
+  var performanceStatus = "";
+
+  if (productionStatus === "生产" && beforeUPDT !== null && afterUPDT !== null) {
+    performanceStatus = afterUPDT <= beforeUPDT ? "好/Good" : "差/Bad";
+  }
+
+  return {
+    beforeProductionAvailableTime: before.prodHours,
+    afterProductionAvailableTime: after.prodHours,
+    beforeAU: _pme_metricValue(beforeAU),
+    afterAU: _pme_metricValue(afterAU),
+    beforeUPDT: _pme_metricValue(beforeUPDT),
+    afterUPDT: _pme_metricValue(afterUPDT),
+    updtGap: _pme_metricValue(updtGap),
+    productionStatus: productionStatus,
+    performanceStatus: performanceStatus,
+  };
+}
+
+/**
+ * 按 PM 开始日期的 20 日切点生成 PME YearMonth。
+ * @param {*} pmDate
+ * @returns {string}
+ */
+function _pme_getYearMonth(pmDate) {
+  var dateKey = _pme_dateKey(pmDate);
+  var parts = dateKey.split("-").map(Number);
+  if (parts.length !== 3 || parts.some(function (part) { return !Number.isFinite(part); })) return "";
+
+  var date = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]));
+  if (parts[2] > 20) date.setUTCDate(date.getUTCDate() + 11);
+  return String(date.getUTCFullYear()) + String(date.getUTCMonth() + 1).padStart(2, "0");
+}
+
+/**
+ * 判断记录是否不纳入最终 KPI。
+ * @param {{keyProcess: string, workcenter: string, durationHours: number}} plan
+ * @param {Array<{workcenter: string, duration: number, status?: string}>} exclusionRules
+ * @returns {boolean}
+ */
+function _pme_isKpiExcluded(plan, exclusionRules) {
+  var process = String(plan && plan.keyProcess || "").trim().toUpperCase();
+  var workcenter = _pme_normalizeWorkcenter(plan && plan.workcenter);
+  var durationHours = _pme_number(plan && plan.durationHours);
+
+  if (/^S1DP000[1-4]$/.test(workcenter)) return true;
+  if (process === "PK" && /^PK[SF]/.test(workcenter.toUpperCase())) return true;
+
+  return (exclusionRules || []).some(function (rule) {
+    var status = String(rule.status == null ? "启用" : rule.status).trim();
+    if (status !== "启用") return false;
+    return _pme_normalizeWorkcenter(rule.workcenter) === workcenter &&
+      _pme_number(rule.duration) === durationHours;
+  });
+}
+
+/**
+ * Master Data 的 15 列标准行。
+ * @param {Object} plan
+ * @param {Object} metrics
+ * @param {string} subprocess
+ * @param {Object} exclusionInfo 保留参数，用于调用方记录排除原因；不新增输出列
+ * @returns {Array<*>}
+ */
+function _pme_buildMasterRow(plan, metrics, subprocess, exclusionInfo) {
+  void exclusionInfo;
+  return [
+    plan.serialNo || "",
+    plan.keyProcess || "",
+    plan.pmDate || "",
+    plan.workcenter || "",
+    metrics.beforeProductionAvailableTime,
+    metrics.afterProductionAvailableTime,
+    metrics.beforeAU,
+    metrics.afterAU,
+    metrics.beforeUPDT,
+    metrics.afterUPDT,
+    metrics.updtGap,
+    _pme_getYearMonth(plan.pmDate),
+    subprocess || "",
+    metrics.productionStatus || "",
+    metrics.performanceStatus || "",
+  ];
+}
+
+/**
+ * 判断 Master Data 行是否具备 Good/Bad KPI 资格。
+ * 排除规则由 _pme_isKpiExcluded 在计划层单独处理。
+ * @param {Array<*>} row
+ * @returns {boolean}
+ */
+function _pme_calculateKpiEligibility(row) {
+  if (!Array.isArray(row)) return false;
+  return row[13] === "生产" && (row[14] === "好/Good" || row[14] === "差/Bad");
+}
