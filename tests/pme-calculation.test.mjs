@@ -519,6 +519,65 @@ test('Master Data 全量清理：删除存量 KPI 排除条目', () => {
   assert.deepEqual(result.slice(1).map(row => row[0]), ['2026-01-04M1']);
 });
 
+test('增量计划选择：跳过已生产，仅保留未达144、未匹配和新增计划', () => {
+  const existing = [
+    _pme_MASTER_HEADERS,
+    masterRow({ serialNo: '2026-01-01M1', productionStatus: '生产' }),
+    masterRow({ serialNo: '2026-01-02M2', productionStatus: '未达144' }),
+    masterRow({ serialNo: '2026-01-03M3', productionStatus: '未匹配到保养记录' }),
+  ];
+  const plans = [
+    { serialNo: '2026-01-01M1' },
+    { serialNo: '2026-01-02M2' },
+    { serialNo: '2026-01-03M3' },
+    { serialNo: '2026-01-04M4' },
+  ];
+
+  const result = _pme_selectIncrementalPmPlans(plans, existing);
+
+  assert.deepEqual(result.map(plan => plan.serialNo), [
+    '2026-01-02M2', '2026-01-03M3', '2026-01-04M4',
+  ]);
+});
+
+test('增量 Master Data：不删除生产记录，但删除当前计划中已满足排除条件的旧记录', () => {
+  const headers = _pme_MASTER_HEADERS.concat([
+    '根本原因/  Root cause', '预防措施/Preventive action', '状态/Status',
+  ]);
+  const row = (serialNo, process, pmDate, workcenter, productionStatus) => [
+    serialNo, process, pmDate, workcenter, 8, 150, 0.5, 0.5, 0.2, 0.2, 0,
+    '202601', '', productionStatus, productionStatus === '生产' ? '好/Good' : '', '', '', '',
+  ];
+  const plans = [
+    { serialNo: '2026-01-01M1', keyProcess: 'IM', pmDate: '2026-01-01', workcenter: 'M1', durationHours: 8 },
+    { serialNo: '2026-01-02M2', keyProcess: 'IM', pmDate: '2026-01-02', workcenter: 'M2', durationHours: 8 },
+    { serialNo: '2026-01-03PKS001', keyProcess: 'PK', pmDate: '2026-01-03', workcenter: 'PKS001', durationHours: 8 },
+  ];
+  const updatedM2 = row('2026-01-02M2', 'IM', '2026-01-02', 'M2', '生产').slice(0, 15);
+
+  const result = _pme_upsertMasterData(
+    [
+      headers,
+      row('2026-01-01M1', 'IM', '2026-01-01', 'M1', '生产'),
+      row('2026-01-02M2', 'IM', '2026-01-02', 'M2', '未达144'),
+      row('2026-01-03PKS001', 'PK', '2026-01-03', 'PKS001', '生产'),
+      row('2026-01-09M9', 'IM', '2026-01-09', 'M9', '生产'),
+    ],
+    [updatedM2],
+    plans,
+    2026,
+    [],
+    [],
+    { mode: 'incremental' },
+  );
+
+  assert.deepEqual(result.slice(1).map(row => row[0]), [
+    '2026-01-01M1', '2026-01-02M2', '2026-01-09M9',
+  ]);
+  assert.equal(result[1][13], '生产');
+  assert.equal(result[2][4], 8);
+});
+
 test('分母为 0 时不生成无效比例', () => {
   const result = _pme_calculateMetrics(
     [metricShift({ prodHours: 0, netRuntime: 1, plantAvailableTime: 0 })],
@@ -909,6 +968,82 @@ test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总�
     assert.match(successLog[2], /执行时长: \d+ ms \(\d+\.\d{2} s\)/);
   } finally {
     _pme_CONFIG.aemSources = previousSources;
+    globalThis.SpreadsheetApp = previousSpreadsheetApp;
+    globalThis.writeLog = previousWriteLog;
+  }
+});
+
+test('增量入口：已生产计划跳过 AEM，并在 Log 中记录增量模式', () => {
+  const masterWrites = [];
+  const kpiWrites = [];
+  const logs = [];
+  let aemOpenCount = 0;
+
+  function memorySheet(name, rows, writes) {
+    return {
+      getLastRow() { return rows.length; },
+      getLastColumn() { return rows[0] ? rows[0].length : 0; },
+      getRange(row, column, numRows = 1, numColumns = 1) {
+        return {
+          getValues() {
+            return rows.slice(row - 1, row - 1 + numRows)
+              .map(item => item.slice(column - 1, column - 1 + numColumns));
+          },
+          getValue() {
+            if (name === 'KPI Summary' && column === 3) return '60%';
+            return rows[row - 1] && rows[row - 1][column - 1];
+          },
+          setValues(values) { writes.push({ name, row, column, values }); },
+          setValue(value) { writes.push({ name, row, column, value }); },
+          setNumberFormat() {},
+          setBackground(value) { writes.push({ name, row, column, background: value }); },
+        };
+      },
+    };
+  }
+
+  const pmRows = [
+    ['类别', '状态', '开始日期', '开始时间', 'AEM#', '保养时间', '工序'],
+    ['PM', '已确认', '2026-01-01', '08:00', 'M1', 8, 'INJ'],
+  ];
+  const existingMasterRow = [
+    '2026-01-01M1', 'IM', '2026-01-01', 'M1', 144, 150, 0.8, 0.8, 0.2, 0.2, 0,
+    '202601', 'IM', '生产', '好/Good',
+  ];
+  const mainSheets = new Map();
+  const mainSpreadsheet = {
+    getSheetByName(name) { return mainSheets.get(name) || null; },
+  };
+  mainSheets.set('PM Data', memorySheet('PM Data', pmRows, []));
+  mainSheets.set('Master Data', memorySheet('Master Data', [_pme_MASTER_HEADERS, existingMasterRow], masterWrites));
+  mainSheets.set('KPI Summary', memorySheet('KPI Summary', [new Array(16).fill('')], kpiWrites));
+
+  const previousSpreadsheetApp = globalThis.SpreadsheetApp;
+  const previousWriteLog = globalThis.writeLog;
+  globalThis.SpreadsheetApp = {
+    openById(id) {
+      if (id === _pme_CONFIG.mainSpreadsheetId) return mainSpreadsheet;
+      aemOpenCount++;
+      throw new Error('增量测试不应读取 AEM');
+    },
+  };
+  globalThis.writeLog = (...args) => logs.push(args);
+
+  try {
+    const result = executePMEIncrementalCalculation({ triggerType: 'scheduled', targetYear: 2026, months: ['202601'] });
+    assert.deepEqual(result, {
+      trigger: '定时',
+      planCount: 0,
+      calculatedCount: 0,
+      warningCount: 0,
+      months: ['202601'],
+    });
+    assert.equal(aemOpenCount, 0);
+    const successLog = logs.find(args => args[0] === 'executePMEIncrementalCalculation' && args[1] === '成功');
+    assert.ok(successLog);
+    assert.match(successLog[2], /模式 增量/);
+    assert.equal(masterWrites.some(item => item.name === 'Master Data' && item.values.length === 2), true);
+  } finally {
     globalThis.SpreadsheetApp = previousSpreadsheetApp;
     globalThis.writeLog = previousWriteLog;
   }

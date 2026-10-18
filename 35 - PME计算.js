@@ -815,6 +815,36 @@ function _pme_calculateMasterRows(source) {
 }
 
 /**
+ * 增量运行只选择尚未完成生产窗口的计划，以及尚未写入 Master Data 的新计划。
+ * 生产状态为“生产”的记录不再重复读取 AEM 计算；其他状态保留重算机会。
+ * @param {Array<Object>} pmPlans 当前执行年份的有效 PM Plan
+ * @param {Array<Array<*>>} existingRows Master Data（含表头）
+ * @returns {Array<Object>}
+ */
+function _pme_selectIncrementalPmPlans(pmPlans, existingRows) {
+  var rows = Array.isArray(existingRows) ? existingRows : [];
+  var headerIndex = _pme_headerIndex(rows[0] || []);
+  var serialColumn = headerIndex["序列号/ Serial No."];
+  var productionStatusColumn = headerIndex["生产状态/ Production Status"];
+  if (serialColumn === undefined || productionStatusColumn === undefined) return (pmPlans || []).slice();
+
+  var statusBySerial = {};
+  rows.slice(1).forEach(function (row) {
+    var serialNo = String(row[serialColumn] == null ? "" : row[serialColumn]).trim();
+    if (!serialNo) return;
+    var productionStatus = String(row[productionStatusColumn] == null ? "" : row[productionStatusColumn]).trim();
+    if (statusBySerial[serialNo] === undefined || productionStatus !== "生产") {
+      statusBySerial[serialNo] = productionStatus;
+    }
+  });
+
+  return (pmPlans || []).filter(function (plan) {
+    var serialNo = String(plan && plan.serialNo != null ? plan.serialNo : "").trim();
+    return !serialNo || statusBySerial[serialNo] !== "生产";
+  });
+}
+
+/**
  * 按序列号幂等更新 Master Data。输入和输出均含表头行。
  * @param {Array<Array<*>>} existingRows
  * @param {Array<Array<*>>} calculatedRows 不含表头
@@ -822,12 +852,14 @@ function _pme_calculateMasterRows(source) {
  * @param {number=} targetYear 当前执行年份；仅清理该年份的失效 Master Data 行
  * @param {Array<string>=} unmatchedPlanSerials 当前有效计划中未匹配到 AEM PM 记录的序列号
  * @param {Array<Object>=} exclusionRules 启用的 KPI 排除条件
+ * @param {{mode?: string}=} options full 默认执行全量清理；incremental 只清理排除条目并保留其他存量
  * @returns {Array<Array<*>>}
  */
-function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear, unmatchedPlanSerials, exclusionRules) {
+function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear, unmatchedPlanSerials, exclusionRules, options) {
   var current = Array.isArray(existingRows) && existingRows.length > 0
     ? existingRows.map(function (row) { return row.slice(); })
     : [_pme_MASTER_HEADERS.slice()];
+  var incrementalMode = options && options.mode === "incremental";
   var header = current[0] || [];
   _pme_validateMasterDataHeaders(header);
   var width = header.length;
@@ -863,53 +895,67 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
       }
     });
 
-    var retainedRows = [current[0]];
-    var rowIndexByIdentity = {};
-    current.slice(1).forEach(function (row) {
-      var pmDate = _pme_dateKey(row[pmDateColumn]);
-      if (pmDate.slice(0, 4) !== targetYearText) {
-        retainedRows.push(row);
-        return;
-      }
-
-      var workcenter = workcenterColumn === undefined ? "" : row[workcenterColumn];
-      var identityKey = _pme_masterDataIdentityKey(pmDate, workcenter);
-      var rowSerial = String(row[serialColumn] || "").trim();
-      if (excludedPlanKeys.has(identityKey) || excludedPlanSerials.has(rowSerial)) return;
-      if (!identityKey || !activePlanKeys.has(identityKey)) {
-        var activeKeyForSerial = activePlanKeysBySerial[rowSerial];
-        if (activeKeyForSerial) {
-          if (!pendingTechnicianRows[activeKeyForSerial]) {
-            pendingTechnicianRows[activeKeyForSerial] = row.slice();
-          } else {
-            _pme_mergeTechnicianFields(
-              pendingTechnicianRows[activeKeyForSerial],
-              row,
-              technicianColumns,
-            );
-          }
+    if (incrementalMode) {
+      var incrementalRows = [current[0]];
+      current.slice(1).forEach(function (row) {
+        var pmDate = _pme_dateKey(row[pmDateColumn]);
+        var workcenter = workcenterColumn === undefined ? "" : row[workcenterColumn];
+        var identityKey = _pme_masterDataIdentityKey(pmDate, workcenter);
+        var rowSerial = String(row[serialColumn] || "").trim();
+        if (pmDate.slice(0, 4) === targetYearText &&
+            (excludedPlanKeys.has(identityKey) || excludedPlanSerials.has(rowSerial))) return;
+        incrementalRows.push(row);
+      });
+      current = incrementalRows;
+    } else {
+      var retainedRows = [current[0]];
+      var rowIndexByIdentity = {};
+      current.slice(1).forEach(function (row) {
+        var pmDate = _pme_dateKey(row[pmDateColumn]);
+        if (pmDate.slice(0, 4) !== targetYearText) {
+          retainedRows.push(row);
+          return;
         }
-        return;
-      }
 
-      var normalizedWorkcenter = _pme_normalizeWorkcenter(workcenter);
-      row[serialColumn] = pmDate + normalizedWorkcenter;
-      if (pendingTechnicianRows[identityKey]) {
-        _pme_mergeTechnicianFields(row, pendingTechnicianRows[identityKey], technicianColumns);
-        delete pendingTechnicianRows[identityKey];
-      }
-      if (rowIndexByIdentity[identityKey] === undefined) {
-        rowIndexByIdentity[identityKey] = retainedRows.length;
-        retainedRows.push(row);
-      } else {
-        _pme_mergeTechnicianFields(
-          retainedRows[rowIndexByIdentity[identityKey]],
-          row,
-          technicianColumns,
-        );
-      }
-    });
-    current = retainedRows;
+        var workcenter = workcenterColumn === undefined ? "" : row[workcenterColumn];
+        var identityKey = _pme_masterDataIdentityKey(pmDate, workcenter);
+        var rowSerial = String(row[serialColumn] || "").trim();
+        if (excludedPlanKeys.has(identityKey) || excludedPlanSerials.has(rowSerial)) return;
+        if (!identityKey || !activePlanKeys.has(identityKey)) {
+          var activeKeyForSerial = activePlanKeysBySerial[rowSerial];
+          if (activeKeyForSerial) {
+            if (!pendingTechnicianRows[activeKeyForSerial]) {
+              pendingTechnicianRows[activeKeyForSerial] = row.slice();
+            } else {
+              _pme_mergeTechnicianFields(
+                pendingTechnicianRows[activeKeyForSerial],
+                row,
+                technicianColumns,
+              );
+            }
+          }
+          return;
+        }
+
+        var normalizedWorkcenter = _pme_normalizeWorkcenter(workcenter);
+        row[serialColumn] = pmDate + normalizedWorkcenter;
+        if (pendingTechnicianRows[identityKey]) {
+          _pme_mergeTechnicianFields(row, pendingTechnicianRows[identityKey], technicianColumns);
+          delete pendingTechnicianRows[identityKey];
+        }
+        if (rowIndexByIdentity[identityKey] === undefined) {
+          rowIndexByIdentity[identityKey] = retainedRows.length;
+          retainedRows.push(row);
+        } else {
+          _pme_mergeTechnicianFields(
+            retainedRows[rowIndexByIdentity[identityKey]],
+            row,
+            technicianColumns,
+          );
+        }
+      });
+      current = retainedRows;
+    }
   }
 
   var unmatchedSerialSet = new Set(unmatchedPlanSerials || []);
@@ -1153,7 +1199,8 @@ function _pme_buildEligibleWorkcenters(pmPlans) {
   return workcenters;
 }
 
-function _pme_loadSourceData(targetYear, asOfDate) {
+function _pme_loadSourceData(targetYear, asOfDate, options) {
+  var loadOptions = options || {};
   var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
   var pmSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.pmSheetName);
   var pmRows = _pme_readSheetRows(pmSheet);
@@ -1162,16 +1209,34 @@ function _pme_loadSourceData(targetYear, asOfDate) {
     ["类别", "状态", "开始日期", "开始时间", "AEM#", "保养时间", "工序"],
     "PM Data",
   );
-  var pmPlans = _pme_selectPmPlans(pmRows, pmHeaderIndex, targetYear, asOfDate);
+  var allPmPlans = _pme_selectPmPlans(pmRows, pmHeaderIndex, targetYear, asOfDate);
+  var pmPlans = loadOptions.mode === "incremental"
+    ? _pme_selectIncrementalPmPlans(allPmPlans, loadOptions.existingRows)
+    : allPmPlans;
+  var exclusionRules = _pme_loadExclusionRules(mainSpreadsheet);
+  var tfTypeMap = _pme_loadTfTypeMap(mainSpreadsheet);
+
+  if (pmPlans.length === 0) {
+    return {
+      pmPlans: pmPlans,
+      allPmPlans: allPmPlans,
+      aemRows: [],
+      aemHeaderIndex: {},
+      exclusionRules: exclusionRules,
+      tfTypeMap: tfTypeMap,
+    };
+  }
+
   var eligibleWorkcenters = _pme_buildEligibleWorkcenters(pmPlans);
   var aem = _pme_readAemSources(eligibleWorkcenters);
 
   return {
     pmPlans: pmPlans,
+    allPmPlans: allPmPlans,
     aemRows: aem.rows,
     aemHeaderIndex: aem.headerIndex,
-    exclusionRules: _pme_loadExclusionRules(mainSpreadsheet),
-    tfTypeMap: _pme_loadTfTypeMap(mainSpreadsheet),
+    exclusionRules: exclusionRules,
+    tfTypeMap: tfTypeMap,
   };
 }
 
@@ -1235,10 +1300,10 @@ function _pme_normalizeTriggerLabel(trigger) {
   return raw;
 }
 
-function _pme_writeExecutionLog(status, detail, trigger) {
+function _pme_writeExecutionLog(status, detail, trigger, functionName) {
   if (typeof writeLog !== "function") return;
   try {
-    writeLog("executePMECalculation", status, detail, _pme_normalizeTriggerLabel(trigger), "");
+    writeLog(functionName || "executePMECalculation", status, detail, _pme_normalizeTriggerLabel(trigger), "");
   } catch (error) {
     console.warn("PME 写入 Log 失败: " + error.message);
   }
@@ -1250,17 +1315,20 @@ function _pme_formatExecutionDuration(durationMs) {
 }
 
 /**
- * PME 入口：完成来源读取、计算、Master Data 更新和 KPI Summary 汇总。
- * @param {{triggerType?: string}=} event
+ * PME 统一执行器。
+ * @param {{triggerType?: string, targetYear?: number, months?: Array<string>}=} event
+ * @param {string} mode full 或 incremental
  * @returns {{trigger: string, planCount: number, calculatedCount: number, warningCount: number, months: Array<string>}}
  */
-function executePMECalculation(event) {
+function _pme_runCalculation(event, mode) {
   var trigger = _pme_normalizeTriggerLabel(event && event.triggerType ? String(event.triggerType) : "manual");
   var startedAt = new Date().getTime();
+  var executionMode = mode === "incremental" ? "incremental" : "full";
+  var functionName = executionMode === "incremental"
+    ? "executePMEIncrementalCalculation"
+    : "executePMECalculation";
   try {
     var targetYear = _pme_getExecutionYear(event);
-    var source = _pme_loadSourceData(targetYear);
-    var calculatedRows = _pme_calculateMasterRows(source);
     var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
     var masterDataSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.masterDataSheetName);
     var kpiSummarySheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.kpiSummarySheetName);
@@ -1268,16 +1336,22 @@ function executePMECalculation(event) {
     if (!kpiSummarySheet) throw new Error("KPI Summary Sheet 不存在");
 
     var existingRows = _pme_readSheetRows(masterDataSheet);
+    var source = _pme_loadSourceData(targetYear, undefined, {
+      mode: executionMode,
+      existingRows: existingRows,
+    });
+    var calculatedRows = _pme_calculateMasterRows(source);
     var mergedRows = _pme_upsertMasterData(
       existingRows,
       calculatedRows,
-      source.pmPlans,
+      source.allPmPlans || source.pmPlans,
       targetYear,
       calculatedRows.unmatchedPlanSerials,
       source.exclusionRules,
+      { mode: executionMode },
     );
     var months = _pme_getExecutionMonths(event);
-    var excludedSerials = _pme_buildExcludedSerials(source.pmPlans, source.exclusionRules);
+    var excludedSerials = _pme_buildExcludedSerials(source.allPmPlans || source.pmPlans, source.exclusionRules);
     var summary = _pme_calculateKpiSummary(mergedRows.slice(1), months, excludedSerials);
 
     _pme_writeMasterDataRows(masterDataSheet, mergedRows);
@@ -1292,9 +1366,11 @@ function executePMECalculation(event) {
     };
     _pme_writeExecutionLog(
       "成功",
-      "计划 " + result.planCount + " 条，计算 " + result.calculatedCount + " 条，告警 " + result.warningCount + " 条；" +
+      "模式 " + (executionMode === "incremental" ? "增量" : "全量") + "；计划 " + result.planCount +
+        " 条，计算 " + result.calculatedCount + " 条，告警 " + result.warningCount + " 条；" +
         _pme_formatExecutionDuration(new Date().getTime() - startedAt),
       trigger,
+      functionName,
     );
     return result;
   } catch (error) {
@@ -1302,7 +1378,24 @@ function executePMECalculation(event) {
       "失败",
       error.message + "；" + _pme_formatExecutionDuration(new Date().getTime() - startedAt),
       trigger,
+      functionName,
     );
     throw error;
   }
+}
+
+/**
+ * PME 全量入口：保留用于初始化、逻辑变更后的重算和异常恢复。
+ * @param {{triggerType?: string}=} event
+ */
+function executePMECalculation(event) {
+  return _pme_runCalculation(event, "full");
+}
+
+/**
+ * PME 增量入口：日常只更新新增、未达144或未匹配到保养记录的计划。
+ * @param {{triggerType?: string}=} event
+ */
+function executePMEIncrementalCalculation(event) {
+  return _pme_runCalculation(event, "incremental");
 }
