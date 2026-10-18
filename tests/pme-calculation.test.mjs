@@ -792,7 +792,9 @@ test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总�
     });
     assert.ok(masterWrites.some(item => item.name === 'Master Data' && item.values.length === 2));
     assert.ok(kpiWrites.some(item => item.name === 'KPI Summary' && item.row === 10 && item.column === 4));
-    assert.ok(logs.some(args => args[0] === 'executePMECalculation' && args[1] === '成功' && args[3] === '手动'));
+    const successLog = logs.find(args => args[0] === 'executePMECalculation' && args[1] === '成功' && args[3] === '手动');
+    assert.ok(successLog);
+    assert.match(successLog[2], /执行时长: \d+ ms \(\d+\.\d{2} s\)/);
   } finally {
     _pme_CONFIG.aemSources = previousSources;
     globalThis.SpreadsheetApp = previousSpreadsheetApp;

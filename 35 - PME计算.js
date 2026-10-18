@@ -1149,6 +1149,11 @@ function _pme_writeExecutionLog(status, detail, trigger) {
   }
 }
 
+function _pme_formatExecutionDuration(durationMs) {
+  var milliseconds = Math.max(0, Math.round(Number(durationMs) || 0));
+  return "执行时长: " + milliseconds + " ms (" + (milliseconds / 1000).toFixed(2) + " s)";
+}
+
 /**
  * PME 入口：完成来源读取、计算、Master Data 更新和 KPI Summary 汇总。
  * @param {{triggerType?: string}=} event
@@ -1156,6 +1161,7 @@ function _pme_writeExecutionLog(status, detail, trigger) {
  */
 function executePMECalculation(event) {
   var trigger = _pme_normalizeTriggerLabel(event && event.triggerType ? String(event.triggerType) : "manual");
+  var startedAt = new Date().getTime();
   try {
     var targetYear = _pme_getExecutionYear(event);
     var source = _pme_loadSourceData(targetYear);
@@ -1190,12 +1196,17 @@ function executePMECalculation(event) {
     };
     _pme_writeExecutionLog(
       "成功",
-      "计划 " + result.planCount + " 条，计算 " + result.calculatedCount + " 条，告警 " + result.warningCount + " 条",
+      "计划 " + result.planCount + " 条，计算 " + result.calculatedCount + " 条，告警 " + result.warningCount + " 条；" +
+        _pme_formatExecutionDuration(new Date().getTime() - startedAt),
       trigger,
     );
     return result;
   } catch (error) {
-    _pme_writeExecutionLog("失败", error.message, trigger);
+    _pme_writeExecutionLog(
+      "失败",
+      error.message + "；" + _pme_formatExecutionDuration(new Date().getTime() - startedAt),
+      trigger,
+    );
     throw error;
   }
 }
