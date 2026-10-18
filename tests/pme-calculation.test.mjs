@@ -28,6 +28,13 @@ test('工序映射：INJ 映射 IM，TF 和 PK 保持原值', () => {
   assert.equal(_pme_mapProcess('PK'), 'PK');
 });
 
+test('子工序映射：IM/PK 使用自身工序，TF 使用机台类型映射', () => {
+  assert.equal(_pme_getSubprocess({ keyProcess: 'IM', workcenter: 'H2FCS903' }, {}), 'IM');
+  assert.equal(_pme_getSubprocess({ keyProcess: 'PK', workcenter: 'P1HA6001' }, {}), 'PK');
+  assert.equal(_pme_getSubprocess({ keyProcess: 'TF', workcenter: 'T2GR0126' }, { T2GR0126: 'Zar' }), 'Zar');
+  assert.equal(_pme_getSubprocess({ keyProcess: 'TF', workcenter: 'T2GR0126' }, {}), '');
+});
+
 test('PM 计划筛选：只保留当年且不晚于执行日的有效计划，并跳过带 SW 的机台', () => {
   const headers = ['状态', '工序', '开始时间', 'AEM#', '保养时间', '类别', '开始日期'];
   const headerIndex = _pme_headerIndex(headers);

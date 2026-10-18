@@ -496,6 +496,13 @@ function _pme_isMasterDataExcluded(plan) {
   return /^S1DP000[1-4]$/.test(workcenter);
 }
 
+function _pme_getSubprocess(plan, tfTypeMap) {
+  var process = String(plan && plan.keyProcess || "").trim().toUpperCase();
+  if (process === "TF") return String((tfTypeMap || {})[plan.workcenter] || "");
+  if (process === "IM" || process === "PK") return process;
+  return "";
+}
+
 /**
  * Master Data 的 15 列标准行。
  * @param {Object} plan
@@ -797,9 +804,7 @@ function _pme_calculateMasterRows(source) {
     var beforeShifts = _pme_selectBeforeShifts(plan.keyProcess, shifts, window.startShiftKey);
     var afterWindow = _pme_selectAfterWindow(plan.keyProcess, shifts, window.afterStartShiftKey);
     var metrics = _pme_calculateMetrics(beforeShifts, afterWindow.rows);
-    var subprocess = plan.keyProcess === "TF"
-      ? String((source.tfTypeMap || {})[plan.workcenter] || "")
-      : "";
+    var subprocess = _pme_getSubprocess(plan, source.tfTypeMap || {});
     var excluded = _pme_isKpiExcluded(plan, source.exclusionRules || []);
     result.push(_pme_buildMasterRow(plan, metrics, subprocess, { excluded: excluded }));
   });
