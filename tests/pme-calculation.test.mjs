@@ -35,6 +35,46 @@ test('子工序映射：IM/PK 使用自身工序，TF 使用机台类型映射',
   assert.equal(_pme_getSubprocess({ keyProcess: 'TF', workcenter: 'T2GR0126' }, {}), '');
 });
 
+test('Master Data 清理：按 PM_Date+机台号去除错行和重复行，并保留 P:R 填写内容', () => {
+  const headers = _pme_MASTER_HEADERS.concat([
+    '根本原因/  Root cause',
+    '预防措施/Preventive action',
+    '状态/Status',
+  ]);
+  const existingRow = (serialNo, pmDate, rootCause = '', preventiveAction = '', status = '') => {
+    const row = new Array(headers.length).fill('');
+    row[0] = serialNo;
+    row[1] = 'TF';
+    row[2] = pmDate;
+    row[3] = 'T1AFT307';
+    row[15] = rootCause;
+    row[16] = preventiveAction;
+    row[17] = status;
+    return row;
+  };
+  const calculatedRow = new Array(_pme_MASTER_HEADERS.length).fill('');
+  calculatedRow[0] = '2026-09-21T1AFT307';
+  calculatedRow[1] = 'TF';
+  calculatedRow[2] = '2026-09-21';
+  calculatedRow[3] = 'T1AFT307';
+
+  const result = _pme_upsertMasterData(
+    [
+      headers,
+      existingRow('2026-09-21T1AFT307', '2026-09-21'),
+      existingRow('2026-09-21T1AFT307', '2026-09-09', '原因', '措施', '待确认'),
+    ],
+    [calculatedRow],
+    [{ serialNo: '2026-09-21T1AFT307', pmDate: '2026-09-21', workcenter: 'T1AFT307' }],
+    2026,
+    [],
+  );
+
+  assert.equal(result.length, 2);
+  assert.deepEqual(result[1].slice(0, 4), ['2026-09-21T1AFT307', 'TF', '2026-09-21', 'T1AFT307']);
+  assert.deepEqual(result[1].slice(15, 18), ['原因', '措施', '待确认']);
+});
+
 test('PM 计划筛选：只保留当年且不晚于执行日的有效计划，并跳过带 SW 的机台', () => {
   const headers = ['状态', '工序', '开始时间', 'AEM#', '保养时间', '类别', '开始日期'];
   const headerIndex = _pme_headerIndex(headers);

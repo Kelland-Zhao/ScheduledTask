@@ -833,21 +833,73 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
   var masterHeaderIndex = _pme_headerIndex(header);
   var serialColumn = masterHeaderIndex["序列号/ Serial No."];
   var pmDateColumn = masterHeaderIndex["保养日期/ PM_Date"];
+  var workcenterColumn = masterHeaderIndex["机台号/ Workcenter"];
+  var technicianColumns = [15, 16, 17].filter(function (column) { return column < width; });
+  var pendingTechnicianRows = {};
 
   if (targetYear != null && Array.isArray(pmPlans)) {
     var targetYearText = String(targetYear).trim();
-    var activePlanSerials = new Set();
+    var activePlanKeys = new Set();
+    var activePlanKeysBySerial = {};
     pmPlans.forEach(function (plan) {
       if (_pme_isMasterDataExcluded(plan)) return;
-      var serialNo = String(plan && plan.serialNo || "").trim();
-      if (serialNo) activePlanSerials.add(serialNo);
+      var planDate = _pme_dateKey(plan && plan.pmDate);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(planDate)) {
+        planDate = _pme_dateKey(String(plan && plan.serialNo || "").slice(0, 10));
+      }
+      var normalizedWorkcenter = _pme_normalizeWorkcenter(plan && plan.workcenter);
+      var planKey = _pme_masterDataIdentityKey(planDate, normalizedWorkcenter);
+      if (planKey) {
+        activePlanKeys.add(planKey);
+        activePlanKeysBySerial[planDate + normalizedWorkcenter] = planKey;
+      }
     });
 
-    current = [current[0]].concat(current.slice(1).filter(function (row) {
+    var retainedRows = [current[0]];
+    var rowIndexByIdentity = {};
+    current.slice(1).forEach(function (row) {
       var pmDate = _pme_dateKey(row[pmDateColumn]);
-      if (pmDate.slice(0, 4) !== targetYearText) return true;
-      return activePlanSerials.has(String(row[serialColumn] || "").trim());
-    }));
+      if (pmDate.slice(0, 4) !== targetYearText) {
+        retainedRows.push(row);
+        return;
+      }
+
+      var workcenter = workcenterColumn === undefined ? "" : row[workcenterColumn];
+      var identityKey = _pme_masterDataIdentityKey(pmDate, workcenter);
+      if (!identityKey || !activePlanKeys.has(identityKey)) {
+        var activeKeyForSerial = activePlanKeysBySerial[String(row[serialColumn] || "").trim()];
+        if (activeKeyForSerial) {
+          if (!pendingTechnicianRows[activeKeyForSerial]) {
+            pendingTechnicianRows[activeKeyForSerial] = row.slice();
+          } else {
+            _pme_mergeTechnicianFields(
+              pendingTechnicianRows[activeKeyForSerial],
+              row,
+              technicianColumns,
+            );
+          }
+        }
+        return;
+      }
+
+      var normalizedWorkcenter = _pme_normalizeWorkcenter(workcenter);
+      row[serialColumn] = pmDate + normalizedWorkcenter;
+      if (pendingTechnicianRows[identityKey]) {
+        _pme_mergeTechnicianFields(row, pendingTechnicianRows[identityKey], technicianColumns);
+        delete pendingTechnicianRows[identityKey];
+      }
+      if (rowIndexByIdentity[identityKey] === undefined) {
+        rowIndexByIdentity[identityKey] = retainedRows.length;
+        retainedRows.push(row);
+      } else {
+        _pme_mergeTechnicianFields(
+          retainedRows[rowIndexByIdentity[identityKey]],
+          row,
+          technicianColumns,
+        );
+      }
+    });
+    current = retainedRows;
   }
 
   var unmatchedSerialSet = new Set(unmatchedPlanSerials || []);
@@ -887,9 +939,20 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
     if (!serialNo) return;
     if (rowIndexBySerial[serialNo] === undefined) {
       rowIndexBySerial[serialNo] = current.length;
-      current.push(_pme_mergeMasterDataRow(row, null, width));
+      var newRow = _pme_mergeMasterDataRow(row, null, width);
+      var newIdentityKey = _pme_masterDataIdentityKey(row[2], row[3]);
+      if (pendingTechnicianRows[newIdentityKey]) {
+        _pme_mergeTechnicianFields(newRow, pendingTechnicianRows[newIdentityKey], technicianColumns);
+        delete pendingTechnicianRows[newIdentityKey];
+      }
+      current.push(newRow);
     } else {
       var rowIndex = rowIndexBySerial[serialNo];
+      var existingIdentityKey = _pme_masterDataIdentityKey(row[2], row[3]);
+      if (pendingTechnicianRows[existingIdentityKey]) {
+        _pme_mergeTechnicianFields(current[rowIndex], pendingTechnicianRows[existingIdentityKey], technicianColumns);
+        delete pendingTechnicianRows[existingIdentityKey];
+      }
       current[rowIndex] = _pme_mergeMasterDataRow(row, current[rowIndex], width);
     }
   });
@@ -902,6 +965,23 @@ function _pme_validateMasterDataHeaders(headers) {
     throw new Error("Master Data 表头前 15 列与 PME 结构不一致");
   }
   return true;
+}
+
+function _pme_masterDataIdentityKey(pmDate, workcenter) {
+  var dateKey = _pme_dateKey(pmDate);
+  var normalizedWorkcenter = _pme_normalizeWorkcenter(workcenter);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateKey) || !normalizedWorkcenter) return "";
+  return dateKey + "\u0001" + normalizedWorkcenter;
+}
+
+function _pme_mergeTechnicianFields(target, source, columns) {
+  (columns || []).forEach(function (column) {
+    if (String(target[column] == null ? "" : target[column]).trim() === "" &&
+        String(source[column] == null ? "" : source[column]).trim() !== "") {
+      target[column] = source[column];
+    }
+  });
+  return target;
 }
 
 function _pme_mergeMasterDataRow(calculatedRow, existingRow, width) {
