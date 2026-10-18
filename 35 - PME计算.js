@@ -846,11 +846,26 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
   }
 
   var unmatchedSerialSet = new Set(unmatchedPlanSerials || []);
+  var metricColumnsToClear = [
+    "Production_AvailableTime_BEFORE PM",
+    "Production_AvailableTime_AFTER PM",
+    "AU_BEFORE PM",
+    "AU_AFTER PM",
+    "UPDT_BEFORE PM",
+    "UPDT_AFTER PM",
+    "UPDT Gap",
+    "子工序/ SubProcess",
+    "绩效状态/ Performance Status",
+  ].map(function (name) { return masterHeaderIndex[name]; })
+    .filter(function (column) { return column !== undefined; });
   var productionStatusColumn = masterHeaderIndex["生产状态/ Production Status"];
   if (productionStatusColumn !== undefined && unmatchedSerialSet.size > 0) {
     for (var unmatchedRowIndex = 1; unmatchedRowIndex < current.length; unmatchedRowIndex++) {
       var unmatchedSerial = String(current[unmatchedRowIndex][serialColumn] || "").trim();
       if (unmatchedSerialSet.has(unmatchedSerial)) {
+        metricColumnsToClear.forEach(function (column) {
+          current[unmatchedRowIndex][column] = "";
+        });
         current[unmatchedRowIndex][productionStatusColumn] = "未匹配到保养记录";
       }
     }

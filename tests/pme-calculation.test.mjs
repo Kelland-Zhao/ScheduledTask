@@ -525,14 +525,42 @@ test('Master Data：2025 保留，2026 清理失效计划并保留缺 AEM 的有
   assert.equal(first.length, 5);
   assert.deepEqual(first[1], historical2025);
   assert.equal(first[2][4], 16);
+  assert.deepEqual(first[3].slice(0, 4), missingAem2026.slice(0, 4));
+  assert.deepEqual(first[3].slice(4, 11), ['', '', '', '', '', '', '']);
+  assert.equal(first[3][11], missingAem2026[11]);
+  assert.equal(first[3][12], '');
   assert.equal(first[3][13], '未匹配到保养记录');
-  assert.deepEqual(first[3].slice(0, 13), missingAem2026.slice(0, 13));
-  assert.deepEqual(first[3].slice(14), missingAem2026.slice(14));
+  assert.equal(first[3][14], '');
   assert.equal(first[4][0], '2026-01-03M3');
   assert.equal(first[4][8], null);
   assert.equal(second.length, 5);
   assert.equal(second.filter(row => row[0] === '2026-01-03M3').length, 1);
   assert.equal(second.filter(row => row[0] === '2026-01-02M2').length, 0);
+});
+
+test('Master Data 未匹配到保养记录：清空旧 PME 结果但保留 P:R 技术员字段', () => {
+  const headers = _pme_MASTER_HEADERS.concat([
+    '根本原因/  Root cause', '预防措施/Preventive action', '状态/Status',
+  ]);
+  const existing = [headers, [
+    '2026-01-04M4', 'TF', '2026-01-04', 'M4', 8, 150, 0.5, 0.5, 0.2, 0.2, 0,
+    '202601', 'Zar', '生产', '好/Good', '历史原因', '历史措施', '待确认',
+  ]];
+
+  const merged = _pme_upsertMasterData(
+    existing,
+    [],
+    [{ serialNo: '2026-01-04M4', workcenter: 'M4' }],
+    2026,
+    ['2026-01-04M4'],
+  );
+
+  assert.deepEqual(merged[1].slice(0, 4), existing[1].slice(0, 4));
+  assert.deepEqual(merged[1].slice(4, 11), ['', '', '', '', '', '', '']);
+  assert.equal(merged[1][12], '');
+  assert.equal(merged[1][13], '未匹配到保养记录');
+  assert.equal(merged[1][14], '');
+  assert.deepEqual(merged[1].slice(15), existing[1].slice(15));
 });
 
 test('Master Data 输出表头缺失时拒绝写入', () => {
