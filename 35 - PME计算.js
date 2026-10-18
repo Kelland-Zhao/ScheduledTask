@@ -61,6 +61,10 @@ function _pme_normalizeWorkcenter(value) {
     .trim();
 }
 
+function _pme_hasSwWorkcenter(value) {
+  return String(value == null ? "" : value).indexOf("【SW】") !== -1;
+}
+
 /**
  * 按表头名称建立列索引；重复表头取第一列。
  * @param {Array<*>} headers
@@ -149,9 +153,11 @@ function _pme_getCell(row, headerIndex, name) {
  * @param {Object<string, number>} headerIndex
  * @returns {Array<Object>}
  */
-function _pme_selectPmPlans(rows, headerIndex) {
+function _pme_selectPmPlans(rows, headerIndex, targetYear, asOfDate) {
   if (!Array.isArray(rows) || rows.length <= 1) return [];
 
+  var targetYearText = targetYear == null ? "" : String(targetYear).trim();
+  var asOfDateKey = _pme_dateKey(asOfDate || _pme_getTodayDateKey());
   var plans = [];
   for (var rowIndex = 1; rowIndex < rows.length; rowIndex++) {
     var row = rows[rowIndex] || [];
@@ -160,7 +166,13 @@ function _pme_selectPmPlans(rows, headerIndex) {
     if (category.indexOf("PM") === -1 || status === "取消") continue;
 
     var pmDate = _pme_dateKey(_pme_getCell(row, headerIndex, "开始日期"));
-    var workcenter = _pme_normalizeWorkcenter(_pme_getCell(row, headerIndex, "AEM#"));
+    var rawWorkcenter = String(_pme_getCell(row, headerIndex, "AEM#") || "").trim();
+    if (_pme_hasSwWorkcenter(rawWorkcenter)) continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(pmDate)) continue;
+    if (targetYearText && pmDate.slice(0, 4) !== targetYearText) continue;
+    if (asOfDateKey && /^\d{4}-\d{2}-\d{2}$/.test(asOfDateKey) && pmDate > asOfDateKey) continue;
+
+    var workcenter = _pme_normalizeWorkcenter(rawWorkcenter);
     if (!pmDate || !workcenter) continue;
 
     var durationValue = Number(_pme_getCell(row, headerIndex, "保养时间"));
@@ -182,6 +194,13 @@ function _pme_selectPmPlans(rows, headerIndex) {
     });
   }
   return plans;
+}
+
+function _pme_getTodayDateKey() {
+  var now = new Date();
+  return String(now.getFullYear()) + "-" +
+    String(now.getMonth() + 1).padStart(2, "0") + "-" +
+    String(now.getDate()).padStart(2, "0");
 }
 
 /**
@@ -673,39 +692,48 @@ function _pme_processMatches(planProcess, aemProcess) {
     String(aemProcess || "").trim().toUpperCase();
 }
 
-function _pme_aemPlanIndexKey(workcenter, process) {
-  return _pme_normalizeWorkcenter(workcenter) + "\u0001" +
-    String(process == null ? "" : process).trim().toUpperCase();
+function _pme_aemPlanIndexKey(workcenter) {
+  return _pme_normalizeWorkcenter(workcenter);
 }
 
 /**
- * 只遍历一次 AEM，建立「机台号 + 工序」索引，避免每条 PM 计划重复扫描全量 AEM。
+ * 只遍历一次 AEM，建立机台号索引，避免每条 PM 计划重复扫描全量 AEM。
  * @param {Array<Array<*>>} aemRows 含表头行
  * @param {Object<string, number>} headerIndex
+ * @param {Set<string>=} eligibleWorkcenters 有效 PM Plan 涉及的机台号
  * @returns {Object<string, Array<Array<*>>>}
  */
-function _pme_buildAemPlanIndex(aemRows, headerIndex) {
+function _pme_buildAemPlanIndex(aemRows, headerIndex, eligibleWorkcenters) {
   var index = {};
   if (!Array.isArray(aemRows)) return index;
 
   for (var rowIndex = 1; rowIndex < aemRows.length; rowIndex++) {
     var row = aemRows[rowIndex] || [];
-    var workcenter = _pme_normalizeWorkcenter(_pme_getCell(row, headerIndex, "Workcenter"));
+    var rawWorkcenter = String(_pme_getCell(row, headerIndex, "Workcenter") || "").trim();
+    if (_pme_hasSwWorkcenter(rawWorkcenter)) continue;
+    var workcenter = _pme_normalizeWorkcenter(rawWorkcenter);
     var process = String(_pme_getCell(row, headerIndex, "process") || "").trim().toUpperCase();
     var workcenterGroup = String(_pme_getCell(row, headerIndex, "WorkcenterGroup") || "").trim();
     if (!workcenter || !process) continue;
+    if (eligibleWorkcenters && typeof eligibleWorkcenters.has === "function" &&
+        !eligibleWorkcenters.has(workcenter)) continue;
     if (process === "IM" && (workcenterGroup === "OPK" || workcenterGroup === "Dummy")) continue;
 
-    var key = _pme_aemPlanIndexKey(workcenter, process);
+    var key = _pme_aemPlanIndexKey(workcenter);
     if (!index[key]) index[key] = [];
     index[key].push(row);
   }
   return index;
 }
 
-function _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow) {
-  var key = _pme_aemPlanIndexKey(plan.workcenter, plan.keyProcess);
+function _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow, headerIndex) {
+  var key = _pme_aemPlanIndexKey(plan.workcenter);
   var rows = aemPlanIndex && aemPlanIndex[key] ? aemPlanIndex[key] : [];
+  if (headerIndex && headerIndex.process !== undefined) {
+    rows = rows.filter(function (row) {
+      return _pme_processMatches(plan.keyProcess, _pme_getCell(row, headerIndex, "process"));
+    });
+  }
   return [headerRow].concat(rows);
 }
 
@@ -748,6 +776,7 @@ function _pme_filterAemRowsForPlan(plan, aemRows, headerIndex) {
 function _pme_calculateMasterRows(source) {
   var result = [];
   var warnings = [];
+  var unmatchedPlanSerials = [];
   var aemRows = source && source.aemRows || [];
   var headerIndex = source && source.aemHeaderIndex || _pme_headerIndex(aemRows[0] || []);
   var aemPlanIndex = source && source.aemPlanIndex || _pme_buildAemPlanIndex(aemRows, headerIndex);
@@ -756,9 +785,10 @@ function _pme_calculateMasterRows(source) {
   (source && source.pmPlans || []).forEach(function (plan) {
     if (_pme_isMasterDataExcluded(plan)) return;
 
-    var planRows = _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow);
+    var planRows = _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow, headerIndex);
     if (!_pme_findAemPmRecord(plan, planRows, headerIndex)) {
       warnings.push("未找到对应 AEM PM 记录: " + plan.serialNo);
+      unmatchedPlanSerials.push(plan.serialNo);
       return;
     }
 
@@ -775,6 +805,7 @@ function _pme_calculateMasterRows(source) {
   });
 
   result.warnings = warnings;
+  result.unmatchedPlanSerials = unmatchedPlanSerials;
   return result;
 }
 
@@ -782,19 +813,52 @@ function _pme_calculateMasterRows(source) {
  * 按序列号幂等更新 Master Data。输入和输出均含表头行。
  * @param {Array<Array<*>>} existingRows
  * @param {Array<Array<*>>} calculatedRows 不含表头
+ * @param {Array<Object>=} pmPlans 当前执行年份的有效 PM Plan
+ * @param {number=} targetYear 当前执行年份；仅清理该年份的失效 Master Data 行
+ * @param {Array<string>=} unmatchedPlanSerials 当前有效计划中未匹配到 AEM PM 记录的序列号
  * @returns {Array<Array<*>>}
  */
-function _pme_upsertMasterData(existingRows, calculatedRows) {
+function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear, unmatchedPlanSerials) {
   var current = Array.isArray(existingRows) && existingRows.length > 0
     ? existingRows.map(function (row) { return row.slice(); })
     : [_pme_MASTER_HEADERS.slice()];
   var header = current[0] || [];
   _pme_validateMasterDataHeaders(header);
   var width = header.length;
+  var masterHeaderIndex = _pme_headerIndex(header);
+  var serialColumn = masterHeaderIndex["序列号/ Serial No."];
+  var pmDateColumn = masterHeaderIndex["保养日期/ PM_Date"];
+
+  if (targetYear != null && Array.isArray(pmPlans)) {
+    var targetYearText = String(targetYear).trim();
+    var activePlanSerials = new Set();
+    pmPlans.forEach(function (plan) {
+      if (_pme_isMasterDataExcluded(plan)) return;
+      var serialNo = String(plan && plan.serialNo || "").trim();
+      if (serialNo) activePlanSerials.add(serialNo);
+    });
+
+    current = [current[0]].concat(current.slice(1).filter(function (row) {
+      var pmDate = _pme_dateKey(row[pmDateColumn]);
+      if (pmDate.slice(0, 4) !== targetYearText) return true;
+      return activePlanSerials.has(String(row[serialColumn] || "").trim());
+    }));
+  }
+
+  var unmatchedSerialSet = new Set(unmatchedPlanSerials || []);
+  var productionStatusColumn = masterHeaderIndex["生产状态/ Production Status"];
+  if (productionStatusColumn !== undefined && unmatchedSerialSet.size > 0) {
+    for (var unmatchedRowIndex = 1; unmatchedRowIndex < current.length; unmatchedRowIndex++) {
+      var unmatchedSerial = String(current[unmatchedRowIndex][serialColumn] || "").trim();
+      if (unmatchedSerialSet.has(unmatchedSerial)) {
+        current[unmatchedRowIndex][productionStatusColumn] = "未匹配到保养记录";
+      }
+    }
+  }
 
   var rowIndexBySerial = {};
   for (var rowIndex = 1; rowIndex < current.length; rowIndex++) {
-    var serialNo = String(current[rowIndex][0] || "").trim();
+    var serialNo = String(current[rowIndex][serialColumn] || "").trim();
     if (serialNo && rowIndexBySerial[serialNo] === undefined) rowIndexBySerial[serialNo] = rowIndex;
   }
 
@@ -881,6 +945,19 @@ function _pme_filterAemRowsBySourceRange(rows, headerIndex, source) {
   return [rows[0]].concat(filtered);
 }
 
+function _pme_filterAemRowsByWorkcenters(rows, headerIndex, eligibleWorkcenters) {
+  if (!Array.isArray(rows) || rows.length === 0) return [];
+  if (!eligibleWorkcenters || typeof eligibleWorkcenters.has !== "function") return rows;
+
+  var filtered = rows.slice(1).filter(function (row) {
+    var rawWorkcenter = String(_pme_getCell(row, headerIndex, "Workcenter") || "").trim();
+    if (_pme_hasSwWorkcenter(rawWorkcenter)) return false;
+    var workcenter = _pme_normalizeWorkcenter(rawWorkcenter);
+    return workcenter && eligibleWorkcenters.has(workcenter);
+  });
+  return [rows[0]].concat(filtered);
+}
+
 function _pme_loadExclusionRules(mainSpreadsheet) {
   var sheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.exclusionSheetName);
   if (!sheet || sheet.getLastRow() < 1) return [];
@@ -917,7 +994,7 @@ function _pme_loadTfTypeMap(mainSpreadsheet) {
   return result;
 }
 
-function _pme_readAemSources() {
+function _pme_readAemSources(eligibleWorkcenters) {
   _pme_validateSourceCoverage(_pme_CONFIG.aemSources);
   var allRows = [];
   var sourceHeaders = null;
@@ -935,6 +1012,7 @@ function _pme_readAemSources() {
 
     var headerIndex = _pme_requireHeaders(rows[0], requiredHeaders, "AEM " + source.label + " SourceData");
     var sourceRows = _pme_filterAemRowsBySourceRange(rows, headerIndex, source);
+    sourceRows = _pme_filterAemRowsByWorkcenters(sourceRows, headerIndex, eligibleWorkcenters);
     if (!sourceHeaders) {
       sourceHeaders = rows[0].slice();
       allRows.push(sourceHeaders);
@@ -956,7 +1034,16 @@ function _pme_readAemSources() {
  * 读取 PME 计算所需的全部来源。
  * @returns {{pmPlans: Array<Object>, aemRows: Array<Array<*>>, aemHeaderIndex: Object, exclusionRules: Array<Object>, tfTypeMap: Object}}
  */
-function _pme_loadSourceData() {
+function _pme_buildEligibleWorkcenters(pmPlans) {
+  var workcenters = new Set();
+  (pmPlans || []).forEach(function (plan) {
+    var workcenter = _pme_normalizeWorkcenter(plan && plan.workcenter);
+    if (workcenter) workcenters.add(workcenter);
+  });
+  return workcenters;
+}
+
+function _pme_loadSourceData(targetYear, asOfDate) {
   var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
   var pmSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.pmSheetName);
   var pmRows = _pme_readSheetRows(pmSheet);
@@ -965,10 +1052,12 @@ function _pme_loadSourceData() {
     ["类别", "状态", "开始日期", "开始时间", "AEM#", "保养时间", "工序"],
     "PM Data",
   );
-  var aem = _pme_readAemSources();
+  var pmPlans = _pme_selectPmPlans(pmRows, pmHeaderIndex, targetYear, asOfDate);
+  var eligibleWorkcenters = _pme_buildEligibleWorkcenters(pmPlans);
+  var aem = _pme_readAemSources(eligibleWorkcenters);
 
   return {
-    pmPlans: _pme_selectPmPlans(pmRows, pmHeaderIndex),
+    pmPlans: pmPlans,
     aemRows: aem.rows,
     aemHeaderIndex: aem.headerIndex,
     exclusionRules: _pme_loadExclusionRules(mainSpreadsheet),
@@ -983,6 +1072,10 @@ function _pme_writeMasterDataRows(sheet, rows) {
   var values = (rows || []).map(function (row) {
     return _pme_mergeMasterDataRow(row, null, width);
   });
+  var existingLastRow = typeof sheet.getLastRow === "function" ? sheet.getLastRow() : values.length;
+  if (existingLastRow > values.length && typeof sheet.deleteRows === "function") {
+    sheet.deleteRows(values.length + 1, existingLastRow - values.length);
+  }
   sheet.getRange(1, 1, values.length, width).setValues(values);
   var dataRowCount = values.length - 1;
   if (dataRowCount > 0) {
@@ -1017,6 +1110,14 @@ function _pme_getExecutionMonths(event) {
   return _pme_generateCurrentMonths();
 }
 
+function _pme_getExecutionYear(event) {
+  var requestedYear = event && event.targetYear;
+  if (/^\d{4}$/.test(String(requestedYear == null ? "" : requestedYear).trim())) {
+    return Number(requestedYear);
+  }
+  return new Date().getFullYear();
+}
+
 function _pme_normalizeTriggerLabel(trigger) {
   var raw = trigger == null ? "" : String(trigger);
   if (raw === "scheduled" || raw === "定时") return "定时";
@@ -1041,7 +1142,8 @@ function _pme_writeExecutionLog(status, detail, trigger) {
 function executePMECalculation(event) {
   var trigger = _pme_normalizeTriggerLabel(event && event.triggerType ? String(event.triggerType) : "manual");
   try {
-    var source = _pme_loadSourceData();
+    var targetYear = _pme_getExecutionYear(event);
+    var source = _pme_loadSourceData(targetYear);
     var calculatedRows = _pme_calculateMasterRows(source);
     var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
     var masterDataSheet = mainSpreadsheet.getSheetByName(_pme_CONFIG.masterDataSheetName);
@@ -1050,7 +1152,13 @@ function executePMECalculation(event) {
     if (!kpiSummarySheet) throw new Error("KPI Summary Sheet 不存在");
 
     var existingRows = _pme_readSheetRows(masterDataSheet);
-    var mergedRows = _pme_upsertMasterData(existingRows, calculatedRows);
+    var mergedRows = _pme_upsertMasterData(
+      existingRows,
+      calculatedRows,
+      source.pmPlans,
+      targetYear,
+      calculatedRows.unmatchedPlanSerials,
+    );
     var months = _pme_getExecutionMonths(event);
     var excludedSerials = _pme_buildExcludedSerials(source.pmPlans, source.exclusionRules);
     var summary = _pme_calculateKpiSummary(mergedRows.slice(1), months, excludedSerials);

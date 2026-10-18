@@ -28,24 +28,40 @@ test('工序映射：INJ 映射 IM，TF 和 PK 保持原值', () => {
   assert.equal(_pme_mapProcess('PK'), 'PK');
 });
 
-test('PM 计划筛选：只保留类别含 PM 且状态非取消的记录', () => {
+test('PM 计划筛选：只保留当年且不晚于执行日的有效计划，并跳过带 SW 的机台', () => {
   const headers = ['状态', '工序', '开始时间', 'AEM#', '保养时间', '类别', '开始日期'];
   const headerIndex = _pme_headerIndex(headers);
   const rows = [
     headers,
     ['已确认', 'INJ', '08:00', 'T2GB0105【SW】', 8, 'PM', '2026-01-21'],
+    ['已确认', 'INJ', '08:00', 'T2GB0106', 8, 'PM', '2025-12-31'],
     ['取消', 'TF', '08:00', 'AFT205', 8, 'PM', '2026-01-22'],
     ['已确认', 'PK', '08:00', 'PK001', 8, 'CM', '2026-01-23'],
     ['已确认', 'PK', '08:00', 'PK002', 8, 'PM/Other', '2026-01-24'],
+    ['已确认', 'PK', '08:00', 'PK003', 8, 'PM', '2026-10-19'],
+    ['已确认', 'PK', '08:00', 'PK004', 8, 'PM', '2026-10-18'],
   ];
 
-  const result = _pme_selectPmPlans(rows, headerIndex);
+  const result = _pme_selectPmPlans(rows, headerIndex, 2026, '2026-10-18');
 
   assert.equal(result.length, 2);
-  assert.deepEqual(result.map(row => row.workcenter), ['T2GB0105', 'PK002']);
-  assert.equal(result[0].keyProcess, 'IM');
-  assert.equal(result[0].serialNo, '2026-01-21T2GB0105');
+  assert.deepEqual(result.map(row => row.workcenter), ['PK002', 'PK004']);
+  assert.equal(result[0].keyProcess, 'PK');
+  assert.equal(result[0].serialNo, '2026-01-24PK002');
   assert.equal(result[0].durationHours, 8);
+});
+
+test('PM 计划筛选：未来日期不产生计划，也不产生后续 AEM 未匹配告警', () => {
+  const headers = ['状态', '工序', '开始时间', 'AEM#', '保养时间', '类别', '开始日期'];
+  const headerIndex = _pme_headerIndex(headers);
+  const rows = [
+    headers,
+    ['已确认', 'TF', '08:00', 'AFT205', 8, 'PM', '2026-10-19'],
+  ];
+
+  const result = _pme_selectPmPlans(rows, headerIndex, 2026, '2026-10-18');
+
+  assert.deepEqual(result, []);
 });
 
 test('PM 计划读取按表头名称，不依赖列顺序', () => {
@@ -106,7 +122,7 @@ test('AEM 班次聚合：同机台同日期班次的分段时间分别累加', (
   assert.equal(result[0].plantAvailableTime, 16);
 });
 
-test('AEM 计划索引：按机台和工序分组，并排除 IM 的 OPK/Dummy 行', () => {
+test('AEM 计划索引：按唯一机台号分组，并排除 IM 的 OPK/Dummy 行', () => {
   const rows = [
     AEM_HEADERS,
     aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'IM', WorkcenterGroup: 'Main' }),
@@ -115,11 +131,48 @@ test('AEM 计划索引：按机台和工序分组，并排除 IM 的 OPK/Dummy �
     aemRow({ ProdDate: '2026-01-01', Workcenter: 'M2', process: 'IM', WorkcenterGroup: 'Dummy' }),
   ];
 
-  const index = _pme_buildAemPlanIndex(rows, _pme_headerIndex(AEM_HEADERS));
+  const index = _pme_buildAemPlanIndex(rows, _pme_headerIndex(AEM_HEADERS), new Set(['M1']));
 
-  assert.equal(index['M1\u0001IM'].length, 1);
-  assert.equal(index['M1\u0001TF'].length, 1);
-  assert.equal(index['M2\u0001IM'], undefined);
+  assert.equal(index.M1.length, 2);
+  assert.equal(index.M2, undefined);
+});
+
+test('AEM 数据预筛选：只保留有效 PM 计划涉及的机台', () => {
+  const rows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1【SW】', process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M2', process: 'TF' }),
+  ];
+
+  const result = _pme_filterAemRowsByWorkcenters(
+    rows,
+    _pme_headerIndex(AEM_HEADERS),
+    new Set(['M1']),
+  );
+
+  assert.equal(result.length, 2);
+  assert.equal(result[1][1], 'M1');
+});
+
+test('按机台索引取数时仍按计划工序过滤，避免跨工序混入计算', () => {
+  const rows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'TF' }),
+  ];
+  const headerIndex = _pme_headerIndex(AEM_HEADERS);
+  const index = _pme_buildAemPlanIndex(rows, headerIndex, new Set(['M1']));
+
+  const result = _pme_getAemRowsForPlan(
+    { workcenter: 'M1', keyProcess: 'IM' },
+    index,
+    AEM_HEADERS,
+    headerIndex,
+  );
+
+  assert.equal(result.length, 2);
+  assert.equal(result[1][8], 'IM');
 });
 
 test('保养窗口：空开始时间默认早班，4 个班次后从第 5 个班次开始', () => {
@@ -436,9 +489,10 @@ test('PM 计划没有 AEM PM 记录时返回告警，不强行匹配其他记录
 
   assert.equal(result.length, 0);
   assert.match(result.warnings[0], /2026-01-02M1/);
+  assert.deepEqual(Array.from(result.unmatchedPlanSerials), ['2026-01-02M1']);
 });
 
-test('Master Data 通过序列号幂等更新并追加，不删除未参与本次计算的历史行', () => {
+test('Master Data：2025 保留，2026 清理失效计划并保留缺 AEM 的有效计划', () => {
   const headers = [
     '序列号/ Serial No.', '工序/ KeyProcess', '保养日期/ PM_Date', '机台号/ Workcenter',
     'Production_AvailableTime_BEFORE PM', 'Production_AvailableTime_AFTER PM',
@@ -446,23 +500,39 @@ test('Master Data 通过序列号幂等更新并追加，不删除未参与本�
     '保养月份/ YearMonth', '子工序/ SubProcess', '生产状态/ Production Status',
     '绩效状态/ Performance Status',
   ];
+  const historical2025 = ['2025-12-31M0', 'IM', '2025-12-31', 'M0', 8, 150, 0.5, 0.6, 0.2, 0.3, 0.1, '202512', '', '生产', '差/Bad'];
   const oldRow = ['2026-01-01M1', 'IM', '2026-01-01', 'M1', 8, 150, 0.5, 0.6, 0.2, 0.3, 0.1, '202601', '', '生产', '差/Bad'];
-  const untouched = ['2026-01-02M2', 'PK', '2026-01-02', 'M2', 8, 150, 0.5, 0.5, 0.2, 0.2, 0, '202601', '', '生产', '好/Good'];
+  const stale2026 = ['2026-01-02M2', 'PK', '2026-01-02', 'M2', 8, 150, 0.5, 0.5, 0.2, 0.2, 0, '202601', '', '生产', '好/Good'];
+  const missingAem2026 = ['2026-01-04M4', 'TF', '2026-01-04', 'M4', 8, 150, 0.5, 0.5, 0.2, 0.2, 0, '202601', '', '未达144', ''];
   const calculated = [
     ['2026-01-01M1', 'IM', '2026-01-01', 'M1', 16, 150, 0.4, 0.4, 0.1, 0.1, 0, '202601', '', '生产', '好/Good'],
     ['2026-01-03M3', 'TF', '2026-01-03', 'M3', 20, 160, 0.4, 0.4, null, 0.2, null, '202601', 'AFT & USW', '生产', ''],
   ];
+  const pmPlans = [
+    { serialNo: '2026-01-01M1', workcenter: 'M1' },
+    { serialNo: '2026-01-04M4', workcenter: 'M4' },
+  ];
 
-  const first = _pme_upsertMasterData([headers, oldRow, untouched], calculated);
-  const second = _pme_upsertMasterData(first, calculated);
+  const first = _pme_upsertMasterData(
+    [headers, historical2025, oldRow, stale2026, missingAem2026],
+    calculated,
+    pmPlans,
+    2026,
+    ['2026-01-04M4'],
+  );
+  const second = _pme_upsertMasterData(first, calculated, pmPlans, 2026, ['2026-01-04M4']);
 
-  assert.equal(first.length, 4);
-  assert.equal(first[1][4], 16);
-  assert.deepEqual(first[2], untouched);
-  assert.equal(first[3][0], '2026-01-03M3');
-  assert.equal(first[3][8], null);
-  assert.equal(second.length, 4);
+  assert.equal(first.length, 5);
+  assert.deepEqual(first[1], historical2025);
+  assert.equal(first[2][4], 16);
+  assert.equal(first[3][13], '未匹配到保养记录');
+  assert.deepEqual(first[3].slice(0, 13), missingAem2026.slice(0, 13));
+  assert.deepEqual(first[3].slice(14), missingAem2026.slice(14));
+  assert.equal(first[4][0], '2026-01-03M3');
+  assert.equal(first[4][8], null);
+  assert.equal(second.length, 5);
   assert.equal(second.filter(row => row[0] === '2026-01-03M3').length, 1);
+  assert.equal(second.filter(row => row[0] === '2026-01-02M2').length, 0);
 });
 
 test('Master Data 输出表头缺失时拒绝写入', () => {
@@ -537,6 +607,26 @@ test('Master Data 新增记录的技术员字段为空，写入只覆盖 A:O', (
     { row: 2, column: 5, numRows: 1, numColumns: 2, format: '0' },
     { row: 2, column: 11, numRows: 1, numColumns: 1, format: '0.00%' },
   ]);
+});
+
+test('Master Data 清理 2026 失效记录后，物理删除末尾多余行', () => {
+  const writes = [];
+  const deletes = [];
+  const sheet = {
+    getLastRow() { return 3; },
+    deleteRows(row, howMany) { deletes.push({ row, howMany }); },
+    getRange(row, column, numRows, numColumns) {
+      return {
+        setValues(values) { writes.push({ row, column, numRows, numColumns, values }); },
+        setNumberFormat() {},
+      };
+    },
+  };
+
+  _pme_writeMasterDataRows(sheet, [_pme_MASTER_HEADERS, ['2026-01-01M1']]);
+
+  assert.deepEqual(deletes, [{ row: 3, howMany: 1 }]);
+  assert.equal(writes[0].numRows, 2);
 });
 
 function masterRow(fields) {
@@ -664,7 +754,7 @@ test('主入口：完成 AEM 读取、Master Data 写入和 KPI Summary 汇总�
   globalThis.writeLog = (...args) => logs.push(args);
 
   try {
-    const result = executePMECalculation({ triggerType: '手动', months: ['202601'] });
+    const result = executePMECalculation({ triggerType: '手动', targetYear: 2026, months: ['202601'] });
     assert.deepEqual(result, {
       trigger: '手动',
       planCount: 1,
