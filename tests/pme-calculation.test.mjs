@@ -454,6 +454,71 @@ test('Master Data 计算结果不生成 S1DP0001–0004 记录', () => {
   assert.deepEqual(result.warnings, ['未找到对应 AEM PM 记录: 2026-01-02M1']);
 });
 
+test('Master Data 计算结果不生成任何 KPI 排除计划', () => {
+  const plans = [
+    {
+      serialNo: '2026-01-02PKS001', keyProcess: 'PK', pmDate: '2026-01-02',
+      workcenter: 'PKS001', startTime: '08:00', durationHours: 8,
+    },
+    {
+      serialNo: '2026-01-03H2FCS506', keyProcess: 'IM', pmDate: '2026-01-03',
+      workcenter: 'H2FCS506', startTime: '08:00', durationHours: 8,
+    },
+    {
+      serialNo: '2026-01-04M1', keyProcess: 'IM', pmDate: '2026-01-04',
+      workcenter: 'M1', startTime: '08:00', durationHours: 8,
+    },
+  ];
+  const aemRows = [
+    AEM_HEADERS,
+    aemRow({ ProdDate: '2026-01-02', Workcenter: 'PKS001', Shift: 2, PM: 1, process: 'PK' }),
+    aemRow({ ProdDate: '2026-01-03', Workcenter: 'H2FCS506', Shift: 2, PM: 1, process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-04', Workcenter: 'M1', Shift: 2, PM: 1, process: 'IM' }),
+  ];
+
+  const result = _pme_calculateMasterRows({
+    pmPlans: plans,
+    aemRows,
+    aemHeaderIndex: _pme_headerIndex(AEM_HEADERS),
+    exclusionRules: [{ workcenter: 'H2FCS506', duration: 8, status: '启用' }],
+    tfTypeMap: {},
+  });
+
+  assert.deepEqual(result.map(row => row[0]), ['2026-01-04M1']);
+});
+
+test('Master Data 全量清理：删除存量 KPI 排除条目', () => {
+  const headers = _pme_MASTER_HEADERS.concat([
+    '根本原因/  Root cause', '预防措施/Preventive action', '状态/Status',
+  ]);
+  const row = (serialNo, process, pmDate, workcenter) => [
+    serialNo, process, pmDate, workcenter, 8, 150, 0.5, 0.5, 0.2, 0.2, 0,
+    '202601', '', '生产', '好/Good', '', '', '',
+  ];
+  const plans = [
+    { serialNo: '2026-01-02PKS001', keyProcess: 'PK', pmDate: '2026-01-02', workcenter: 'PKS001', durationHours: 8 },
+    { serialNo: '2026-01-03H2FCS506', keyProcess: 'IM', pmDate: '2026-01-03', workcenter: 'H2FCS506', durationHours: 8 },
+    { serialNo: '2026-01-04M1', keyProcess: 'IM', pmDate: '2026-01-04', workcenter: 'M1', durationHours: 8 },
+  ];
+  const calculated = [row('2026-01-04M1', 'IM', '2026-01-04', 'M1').slice(0, 15)];
+
+  const result = _pme_upsertMasterData(
+    [
+      headers,
+      row('2026-01-02PKS001', 'PK', '2026-01-02', 'PKS001'),
+      row('2026-01-03H2FCS506', 'IM', '2026-01-03', 'H2FCS506'),
+      row('2026-01-04M1', 'IM', '2026-01-04', 'M1'),
+    ],
+    calculated,
+    plans,
+    2026,
+    [],
+    [{ workcenter: 'H2FCS506', duration: 8, status: '启用' }],
+  );
+
+  assert.deepEqual(result.slice(1).map(row => row[0]), ['2026-01-04M1']);
+});
+
 test('分母为 0 时不生成无效比例', () => {
   const result = _pme_calculateMetrics(
     [metricShift({ prodHours: 0, netRuntime: 1, plantAvailableTime: 0 })],

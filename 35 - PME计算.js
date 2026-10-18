@@ -487,13 +487,13 @@ function _pme_isKpiExcluded(plan, exclusionRules) {
 
 /**
  * 判断计划是否完全不生成 Master Data 明细。
- * 目前仅豁免员工维护的 S1DP0001–0004；其他 KPI 排除规则仍保留明细。
+ * Master Data 与 KPI 使用同一套排除条件；被排除计划不生成明细。
  * @param {{workcenter: string}=} plan
+ * @param {Array<Object>=} exclusionRules
  * @returns {boolean}
  */
-function _pme_isMasterDataExcluded(plan) {
-  var workcenter = _pme_normalizeWorkcenter(plan && plan.workcenter);
-  return /^S1DP000[1-4]$/.test(workcenter);
+function _pme_isMasterDataExcluded(plan, exclusionRules) {
+  return _pme_isKpiExcluded(plan, exclusionRules || []);
 }
 
 function _pme_getSubprocess(plan, tfTypeMap) {
@@ -790,7 +790,7 @@ function _pme_calculateMasterRows(source) {
   var headerRow = aemRows[0] || [];
 
   (source && source.pmPlans || []).forEach(function (plan) {
-    if (_pme_isMasterDataExcluded(plan)) return;
+    if (_pme_isMasterDataExcluded(plan, source.exclusionRules || [])) return;
 
     var planRows = _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow, headerIndex);
     if (!_pme_findAemPmRecord(plan, planRows, headerIndex)) {
@@ -821,9 +821,10 @@ function _pme_calculateMasterRows(source) {
  * @param {Array<Object>=} pmPlans 当前执行年份的有效 PM Plan
  * @param {number=} targetYear 当前执行年份；仅清理该年份的失效 Master Data 行
  * @param {Array<string>=} unmatchedPlanSerials 当前有效计划中未匹配到 AEM PM 记录的序列号
+ * @param {Array<Object>=} exclusionRules 启用的 KPI 排除条件
  * @returns {Array<Array<*>>}
  */
-function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear, unmatchedPlanSerials) {
+function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear, unmatchedPlanSerials, exclusionRules) {
   var current = Array.isArray(existingRows) && existingRows.length > 0
     ? existingRows.map(function (row) { return row.slice(); })
     : [_pme_MASTER_HEADERS.slice()];
@@ -841,8 +842,9 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
     var targetYearText = String(targetYear).trim();
     var activePlanKeys = new Set();
     var activePlanKeysBySerial = {};
+    var excludedPlanKeys = new Set();
+    var excludedPlanSerials = new Set();
     pmPlans.forEach(function (plan) {
-      if (_pme_isMasterDataExcluded(plan)) return;
       var planDate = _pme_dateKey(plan && plan.pmDate);
       if (!/^\d{4}-\d{2}-\d{2}$/.test(planDate)) {
         planDate = _pme_dateKey(String(plan && plan.serialNo || "").slice(0, 10));
@@ -850,8 +852,14 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
       var normalizedWorkcenter = _pme_normalizeWorkcenter(plan && plan.workcenter);
       var planKey = _pme_masterDataIdentityKey(planDate, normalizedWorkcenter);
       if (planKey) {
+        var canonicalSerial = planDate + normalizedWorkcenter;
+        if (_pme_isMasterDataExcluded(plan, exclusionRules || [])) {
+          excludedPlanKeys.add(planKey);
+          excludedPlanSerials.add(canonicalSerial);
+          return;
+        }
         activePlanKeys.add(planKey);
-        activePlanKeysBySerial[planDate + normalizedWorkcenter] = planKey;
+        activePlanKeysBySerial[canonicalSerial] = planKey;
       }
     });
 
@@ -866,8 +874,10 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
 
       var workcenter = workcenterColumn === undefined ? "" : row[workcenterColumn];
       var identityKey = _pme_masterDataIdentityKey(pmDate, workcenter);
+      var rowSerial = String(row[serialColumn] || "").trim();
+      if (excludedPlanKeys.has(identityKey) || excludedPlanSerials.has(rowSerial)) return;
       if (!identityKey || !activePlanKeys.has(identityKey)) {
-        var activeKeyForSerial = activePlanKeysBySerial[String(row[serialColumn] || "").trim()];
+        var activeKeyForSerial = activePlanKeysBySerial[rowSerial];
         if (activeKeyForSerial) {
           if (!pendingTechnicianRows[activeKeyForSerial]) {
             pendingTechnicianRows[activeKeyForSerial] = row.slice();
@@ -1264,6 +1274,7 @@ function executePMECalculation(event) {
       source.pmPlans,
       targetYear,
       calculatedRows.unmatchedPlanSerials,
+      source.exclusionRules,
     );
     var months = _pme_getExecutionMonths(event);
     var excludedSerials = _pme_buildExcludedSerials(source.pmPlans, source.exclusionRules);
