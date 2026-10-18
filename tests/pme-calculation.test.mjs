@@ -598,6 +598,43 @@ test('来源表头校验：缺少必需字段时抛出明确错误', () => {
   );
 });
 
+test('AEM读取：只读取必要字段覆盖的最小连续列范围', () => {
+  const headers = [
+    'UnusedBefore', 'ProdDate', 'Workcenter', 'Shift', 'Prod_Hours', 'NetRuntime',
+    'PlantAvailableTime', 'PM', 'process', 'WorkcenterGroup', 'CO', 'UnusedAfter',
+  ];
+  const rows = [headers, [
+    'x', '2026-01-01', 'M1', 1, 8, 4, 8, 0, 'IM', 'Main', 0, 'y',
+  ]];
+  const ranges = [];
+  const sheet = {
+    getLastRow() { return rows.length; },
+    getLastColumn() { return headers.length; },
+    getRange(row, column, numRows, numColumns) {
+      ranges.push({ row, column, numRows, numColumns });
+      return {
+        getValues() {
+          return rows.slice(row - 1, row - 1 + numRows)
+            .map(item => item.slice(column - 1, column - 1 + numColumns));
+        },
+      };
+    },
+  };
+  const required = [
+    'ProdDate', 'Workcenter', 'Shift', 'Prod_Hours', 'NetRuntime',
+    'PlantAvailableTime', 'PM', 'process', 'WorkcenterGroup', 'CO',
+  ];
+
+  const result = _pme_readSheetRowsByHeaders(sheet, required, 'AEM SourceData');
+
+  assert.deepEqual(ranges, [
+    { row: 1, column: 1, numRows: 1, numColumns: 12 },
+    { row: 2, column: 2, numRows: 1, numColumns: 10 },
+  ]);
+  assert.deepEqual(result[0], required);
+  assert.deepEqual(result[1], rows[1].slice(1, 11));
+});
+
 test('来源覆盖校验：日期范围重叠时中止', () => {
   assert.throws(
     () => _pme_validateSourceCoverage([
@@ -828,6 +865,50 @@ test('Master Data 清理 2026 失效记录后，物理删除末尾多余行', ()
   assert.equal(writes[0].numRows, 2);
 });
 
+test('增量 Master Data 写入：只删除、更新和追加受影响的 A:O 行', () => {
+  const headers = _pme_MASTER_HEADERS.concat([
+    '根本原因/  Root cause', '预防措施/Preventive action', '状态/Status',
+  ]);
+  const existingRow = (serialNo, status, rootCause = '') => [
+    serialNo, 'IM', serialNo.slice(0, 10), serialNo.slice(10), 8, 150, 0.5, 0.5, 0.2, 0.2, 0,
+    '202601', 'IM', status, status === '生产' ? '好/Good' : '', rootCause, '', '',
+  ];
+  const oldProduction = existingRow('2026-01-01M1', '生产', '保留原因');
+  const oldPending = existingRow('2026-01-02M2', '未达144');
+  const oldExcluded = existingRow('2026-01-03PKS001', '生产');
+  const updatedPending = oldPending.slice(0, 15);
+  updatedPending[4] = 16;
+  updatedPending[13] = '生产';
+  updatedPending[14] = '好/Good';
+  const newRow = existingRow('2026-01-04M4', '未达144').slice(0, 15);
+  const writes = [];
+  const deletes = [];
+  const sheet = {
+    deleteRows(row, count) { deletes.push({ row, count }); },
+    getRange(row, column, numRows, numColumns) {
+      return {
+        setValues(values) { writes.push({ row, column, numRows, numColumns, values }); },
+        setNumberFormat() {},
+      };
+    },
+  };
+
+  const plan = _pme_writeMasterDataIncremental(
+    sheet,
+    [headers, oldProduction, oldPending, oldExcluded],
+    [headers, oldProduction, updatedPending, newRow],
+  );
+
+  assert.deepEqual(deletes, [{ row: 4, count: 1 }]);
+  assert.deepEqual(plan, { deletedCount: 1, updatedCount: 1, addedCount: 1 });
+  assert.equal(writes.length, 2);
+  assert.deepEqual(writes.map(item => [item.row, item.column, item.numRows, item.numColumns]), [
+    [3, 1, 1, 15], [4, 1, 1, 15],
+  ]);
+  assert.deepEqual(writes[0].values[0].slice(0, 5), updatedPending.slice(0, 5));
+  assert.deepEqual(writes[1].values[0], newRow);
+});
+
 function masterRow(fields) {
   const row = new Array(15).fill('');
   row[0] = fields.serialNo || '';
@@ -1042,7 +1123,8 @@ test('增量入口：已生产计划跳过 AEM，并在 Log 中记录增量模�
     const successLog = logs.find(args => args[0] === 'executePMEIncrementalCalculation' && args[1] === '成功');
     assert.ok(successLog);
     assert.match(successLog[2], /模式 增量/);
-    assert.equal(masterWrites.some(item => item.name === 'Master Data' && item.values.length === 2), true);
+    assert.equal(masterWrites.length, 0);
+    assert.equal(kpiWrites.length, 0);
   } finally {
     globalThis.SpreadsheetApp = previousSpreadsheetApp;
     globalThis.writeLog = previousWriteLog;

@@ -1079,6 +1079,36 @@ function _pme_readSheetRows(sheet, chunkRows) {
   return rows;
 }
 
+/**
+ * 只读取必需字段覆盖的最小连续列范围，降低 AEM 的传输和内存开销。
+ * @param {Object} sheet
+ * @param {Array<string>} requiredHeaders
+ * @param {string} sourceName
+ * @returns {Array<Array<*>>}
+ */
+function _pme_readSheetRowsByHeaders(sheet, requiredHeaders, sourceName) {
+  if (!sheet) throw new Error("目标 Sheet 不存在");
+  var lastRow = sheet.getLastRow();
+  var lastColumn = sheet.getLastColumn();
+  if (lastRow < 1 || lastColumn < 1) return [];
+
+  var fullHeader = sheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+  var fullHeaderIndex = _pme_requireHeaders(fullHeader, requiredHeaders, sourceName || "数据源");
+  var requiredColumns = (requiredHeaders || []).map(function (name) { return fullHeaderIndex[name]; });
+  var firstColumn = Math.min.apply(null, requiredColumns);
+  var lastRequiredColumn = Math.max.apply(null, requiredColumns);
+  var width = lastRequiredColumn - firstColumn + 1;
+  var header = fullHeader.slice(firstColumn, lastRequiredColumn + 1);
+  var rows = [header];
+  var size = _pme_CONFIG.sourceChunkRows;
+  for (var startRow = 2; startRow <= lastRow; startRow += size) {
+    var count = Math.min(size, lastRow - startRow + 1);
+    var chunk = sheet.getRange(startRow, firstColumn + 1, count, width).getValues();
+    _pme_appendRows(rows, chunk);
+  }
+  return rows;
+}
+
 function _pme_filterAemRowsBySourceRange(rows, headerIndex, source) {
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("AEM " + String(source && source.label || "来源") + " SourceData 为空");
@@ -1163,7 +1193,7 @@ function _pme_readAemSources(eligibleWorkcenters) {
     var spreadsheet = SpreadsheetApp.openById(source.id);
     var sheet = spreadsheet.getSheetByName(_pme_CONFIG.sourceSheetName);
     if (!sheet) throw new Error("AEM 来源缺少 SourceData: " + source.label);
-    var rows = _pme_readSheetRows(sheet);
+    var rows = _pme_readSheetRowsByHeaders(sheet, requiredHeaders, "AEM " + source.label + " SourceData");
     if (rows.length === 0) throw new Error("AEM " + source.label + " SourceData 为空");
 
     var headerIndex = _pme_requireHeaders(rows[0], requiredHeaders, "AEM " + source.label + " SourceData");
@@ -1259,6 +1289,144 @@ function _pme_writeMasterDataRows(sheet, rows) {
   }
 }
 
+function _pme_valuesEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * 构造增量 Master Data 写入计划。现有行按序列号匹配，避免写回 P:R。
+ * @param {Array<Array<*>>} existingRows
+ * @param {Array<Array<*>>} mergedRows
+ * @returns {{deleteRows: Array<number>, updateBlocks: Array<Object>, appendRows: Array<Array<*>>, deletedCount: number, updatedCount: number, addedCount: number}}
+ */
+function _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows) {
+  var existingData = (existingRows || []).slice(1);
+  var mergedData = (mergedRows || []).slice(1);
+  var queues = {};
+  existingData.forEach(function (row, index) {
+    var serialNo = String(row && row[0] != null ? row[0] : "").trim();
+    var key = serialNo || "__EMPTY_EXISTING_" + index;
+    if (!queues[key]) queues[key] = [];
+    queues[key].push(index);
+  });
+
+  var matched = new Array(existingData.length).fill(false);
+  var updates = [];
+  var appendRows = [];
+  mergedData.forEach(function (row) {
+    var serialNo = String(row && row[0] != null ? row[0] : "").trim();
+    var key = serialNo;
+    var queue = queues[key] || [];
+    var existingIndex = queue.shift();
+    if (existingIndex === undefined) {
+      appendRows.push((row || []).slice(0, _pme_MASTER_HEADERS.length));
+      return;
+    }
+
+    matched[existingIndex] = true;
+    var currentValues = existingData[existingIndex].slice(0, _pme_MASTER_HEADERS.length);
+    var nextValues = (row || []).slice(0, _pme_MASTER_HEADERS.length);
+    if (!_pme_valuesEqual(currentValues, nextValues)) {
+      updates.push({ originalIndex: existingIndex, values: nextValues });
+    }
+  });
+
+  var deleteRows = [];
+  matched.forEach(function (isMatched, index) {
+    if (!isMatched) deleteRows.push(index + 2);
+  });
+
+  var updateRecords = updates.map(function (update) {
+    var deletedBefore = deleteRows.filter(function (rowNumber) {
+      return rowNumber < update.originalIndex + 2;
+    }).length;
+    return {
+      row: update.originalIndex + 2 - deletedBefore,
+      values: update.values,
+    };
+  }).sort(function (left, right) { return left.row - right.row; });
+
+  var updateBlocks = [];
+  updateRecords.forEach(function (record) {
+    var previous = updateBlocks[updateBlocks.length - 1];
+    if (previous && previous.startRow + previous.values.length === record.row) {
+      previous.values.push(record.values);
+    } else {
+      updateBlocks.push({ startRow: record.row, values: [record.values] });
+    }
+  });
+
+  return {
+    deleteRows: deleteRows,
+    updateBlocks: updateBlocks,
+    appendRows: appendRows,
+    deletedCount: deleteRows.length,
+    updatedCount: updates.length,
+    addedCount: appendRows.length,
+  };
+}
+
+function _pme_applyMasterDataNumberFormats(sheet, startRow, rowCount) {
+  if (!sheet || rowCount <= 0 || typeof sheet.getRange !== "function") return;
+  sheet.getRange(startRow, 5, rowCount, 2).setNumberFormat("0");
+  sheet.getRange(startRow, 11, rowCount, 1).setNumberFormat("0.00%");
+}
+
+/**
+ * 增量写入 Master Data：删除排除行、更新变化的 A:O、追加新行，不触碰 P:R。
+ * @param {Object} sheet
+ * @param {Array<Array<*>>} existingRows
+ * @param {Array<Array<*>>} mergedRows
+ * @returns {{deletedCount: number, updatedCount: number, addedCount: number}}
+ */
+function _pme_writeMasterDataIncremental(sheet, existingRows, mergedRows) {
+  if (!sheet) throw new Error("Master Data Sheet 不存在");
+  _pme_validateMasterDataHeaders((mergedRows || [])[0] || (existingRows || [])[0] || []);
+  var plan = _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows);
+
+  var deleteRows = plan.deleteRows.slice().sort(function (left, right) { return right - left; });
+  var deleteStart = null;
+  var deleteCount = 0;
+  var flushDeleteRange = function () {
+    if (deleteStart !== null && typeof sheet.deleteRows === "function") {
+      sheet.deleteRows(deleteStart, deleteCount);
+    }
+    deleteStart = null;
+    deleteCount = 0;
+  };
+  deleteRows.forEach(function (rowNumber) {
+    if (deleteStart === null) {
+      deleteStart = rowNumber;
+      deleteCount = 1;
+    } else if (rowNumber === deleteStart - 1) {
+      deleteStart = rowNumber;
+      deleteCount++;
+    } else {
+      flushDeleteRange();
+      deleteStart = rowNumber;
+      deleteCount = 1;
+    }
+  });
+  flushDeleteRange();
+
+  plan.updateBlocks.forEach(function (block) {
+    sheet.getRange(block.startRow, 1, block.values.length, _pme_MASTER_HEADERS.length).setValues(block.values);
+    _pme_applyMasterDataNumberFormats(sheet, block.startRow, block.values.length);
+  });
+
+  if (plan.appendRows.length > 0) {
+    var appendStartRow = (existingRows || []).length - plan.deletedCount + 1;
+    sheet.getRange(appendStartRow, 1, plan.appendRows.length, _pme_MASTER_HEADERS.length)
+      .setValues(plan.appendRows);
+    _pme_applyMasterDataNumberFormats(sheet, appendStartRow, plan.appendRows.length);
+  }
+  return {
+    deletedCount: plan.deletedCount,
+    updatedCount: plan.updatedCount,
+    addedCount: plan.addedCount,
+  };
+}
+
 function _pme_buildExcludedSerials(pmPlans, exclusionRules) {
   var excluded = new Set();
   (pmPlans || []).forEach(function (plan) {
@@ -1352,9 +1520,35 @@ function _pme_runCalculation(event, mode) {
     );
     var months = _pme_getExecutionMonths(event);
     var excludedSerials = _pme_buildExcludedSerials(source.allPmPlans || source.pmPlans, source.exclusionRules);
+
+    var writeStats = { deletedCount: 0, updatedCount: 0, addedCount: 0 };
+    if (executionMode === "incremental") {
+      var writePlan = _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows);
+      if (writePlan.deletedCount === 0 && writePlan.updatedCount === 0 && writePlan.addedCount === 0) {
+        var noOpResult = {
+          trigger: trigger,
+          planCount: source.pmPlans.length,
+          calculatedCount: calculatedRows.length,
+          warningCount: (calculatedRows.warnings || []).length,
+          months: months,
+        };
+        _pme_writeExecutionLog(
+          "成功",
+          "模式 增量；无待写入变化，跳过 AEM 后续写入；候选计划 " + source.pmPlans.length +
+            " 条，跳过计划 " + Math.max(0, source.allPmPlans.length - source.pmPlans.length) +
+            " 条，AEM读取 " + Math.max(0, (source.aemRows || []).length - 1) + " 行；" +
+            _pme_formatExecutionDuration(new Date().getTime() - startedAt),
+          trigger,
+          functionName,
+        );
+        return noOpResult;
+      }
+      writeStats = _pme_writeMasterDataIncremental(masterDataSheet, existingRows, mergedRows);
+    } else {
+      _pme_writeMasterDataRows(masterDataSheet, mergedRows);
+    }
     var summary = _pme_calculateKpiSummary(mergedRows.slice(1), months, excludedSerials);
 
-    _pme_writeMasterDataRows(masterDataSheet, mergedRows);
     _pme_writeKpiSummary(summary, months, kpiSummarySheet);
 
     var result = {
@@ -1364,10 +1558,16 @@ function _pme_runCalculation(event, mode) {
       warningCount: (calculatedRows.warnings || []).length,
       months: months,
     };
+    var writeDetail = executionMode === "incremental"
+      ? "新增 " + writeStats.addedCount + " 条，更新 " + writeStats.updatedCount + " 条，删除 " + writeStats.deletedCount + " 条；"
+      : "Master Data 全量写回；";
     _pme_writeExecutionLog(
       "成功",
       "模式 " + (executionMode === "incremental" ? "增量" : "全量") + "；计划 " + result.planCount +
         " 条，计算 " + result.calculatedCount + " 条，告警 " + result.warningCount + " 条；" +
+        "跳过 " + Math.max(0, (source.allPmPlans || source.pmPlans).length - source.pmPlans.length) +
+        " 条，AEM读取 " + Math.max(0, (source.aemRows || []).length - 1) + " 行，" +
+        writeDetail +
         _pme_formatExecutionDuration(new Date().getTime() - startedAt),
       trigger,
       functionName,
