@@ -75,12 +75,13 @@ test('Master Data 清理：按 PM_Date+机台号去除错行和重复行，并�
   assert.deepEqual(result[1].slice(15, 18), ['原因', '措施', '待确认']);
 });
 
-test('PM 计划筛选：只保留当年且不晚于执行日的有效计划，并跳过带 SW 的机台', () => {
+test('PM 计划筛选：只保留当年且不晚于执行日的有效计划，并跳过 SW/FPR 机台', () => {
   const headers = ['状态', '工序', '开始时间', 'AEM#', '保养时间', '类别', '开始日期'];
   const headerIndex = _pme_headerIndex(headers);
   const rows = [
     headers,
     ['已确认', 'INJ', '08:00', 'T2GB0105【SW】', 8, 'PM', '2026-01-21'],
+    ['已确认', 'INJ', '08:00', 'T2GB0107【FPR】', 8, 'PM', '2026-01-22'],
     ['已确认', 'INJ', '08:00', 'T2GB0106', 8, 'PM', '2025-12-31'],
     ['取消', 'TF', '08:00', 'AFT205', 8, 'PM', '2026-01-22'],
     ['已确认', 'PK', '08:00', 'PK001', 8, 'CM', '2026-01-23'],
@@ -189,6 +190,7 @@ test('AEM 数据预筛选：只保留有效 PM 计划涉及的机台', () => {
     AEM_HEADERS,
     aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1', process: 'IM' }),
     aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1【SW】', process: 'IM' }),
+    aemRow({ ProdDate: '2026-01-01', Workcenter: 'M1【FPR】', process: 'IM' }),
     aemRow({ ProdDate: '2026-01-01', Workcenter: 'M2', process: 'TF' }),
   ];
 

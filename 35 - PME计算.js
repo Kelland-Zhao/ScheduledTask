@@ -61,8 +61,9 @@ function _pme_normalizeWorkcenter(value) {
     .trim();
 }
 
-function _pme_hasSwWorkcenter(value) {
-  return String(value == null ? "" : value).indexOf("【SW】") !== -1;
+function _pme_hasSkippedWorkcenter(value) {
+  var workcenter = String(value == null ? "" : value);
+  return workcenter.indexOf("【SW】") !== -1 || workcenter.indexOf("【FPR】") !== -1;
 }
 
 /**
@@ -167,7 +168,7 @@ function _pme_selectPmPlans(rows, headerIndex, targetYear, asOfDate) {
 
     var pmDate = _pme_dateKey(_pme_getCell(row, headerIndex, "开始日期"));
     var rawWorkcenter = String(_pme_getCell(row, headerIndex, "AEM#") || "").trim();
-    if (_pme_hasSwWorkcenter(rawWorkcenter)) continue;
+    if (_pme_hasSkippedWorkcenter(rawWorkcenter)) continue;
     if (!/^\d{4}-\d{2}-\d{2}$/.test(pmDate)) continue;
     if (targetYearText && pmDate.slice(0, 4) !== targetYearText) continue;
     if (asOfDateKey && /^\d{4}-\d{2}-\d{2}$/.test(asOfDateKey) && pmDate > asOfDateKey) continue;
@@ -717,7 +718,7 @@ function _pme_buildAemPlanIndex(aemRows, headerIndex, eligibleWorkcenters) {
   for (var rowIndex = 1; rowIndex < aemRows.length; rowIndex++) {
     var row = aemRows[rowIndex] || [];
     var rawWorkcenter = String(_pme_getCell(row, headerIndex, "Workcenter") || "").trim();
-    if (_pme_hasSwWorkcenter(rawWorkcenter)) continue;
+    if (_pme_hasSkippedWorkcenter(rawWorkcenter)) continue;
     var workcenter = _pme_normalizeWorkcenter(rawWorkcenter);
     var process = String(_pme_getCell(row, headerIndex, "process") || "").trim().toUpperCase();
     var workcenterGroup = String(_pme_getCell(row, headerIndex, "WorkcenterGroup") || "").trim();
@@ -1137,7 +1138,7 @@ function _pme_filterAemRowsByWorkcenters(rows, headerIndex, eligibleWorkcenters)
 
   var filtered = rows.slice(1).filter(function (row) {
     var rawWorkcenter = String(_pme_getCell(row, headerIndex, "Workcenter") || "").trim();
-    if (_pme_hasSwWorkcenter(rawWorkcenter)) return false;
+    if (_pme_hasSkippedWorkcenter(rawWorkcenter)) return false;
     var workcenter = _pme_normalizeWorkcenter(rawWorkcenter);
     return workcenter && eligibleWorkcenters.has(workcenter);
   });
