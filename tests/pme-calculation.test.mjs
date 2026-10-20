@@ -128,25 +128,25 @@ test('PM 计划读取按表头名称，不依赖列顺序', () => {
   assert.equal(result[0].keyProcess, 'TF');
 });
 
-test('PM Event 分组：仅按同机台且连续日期分组，不要求工序或开始班次一致', () => {
+test('PM Event 分组：仅注塑 IM 按同机台且连续日期分组', () => {
   const plans = [
     { serialNo: '2026-03-05H1HTA656', keyProcess: 'IM', pmDate: '2026-03-05', workcenter: 'H1HTA656', startTime: '08:00', rowIndex: 1 },
-    { serialNo: '2026-03-06H1HTA656', keyProcess: 'TF', pmDate: '2026-03-06', workcenter: 'H1HTA656', startTime: '16:00', rowIndex: 2 },
-    { serialNo: '2026-03-07H1HTA656', keyProcess: 'IM', pmDate: '2026-03-07', workcenter: 'H1HTA656', startTime: '00:00', rowIndex: 3 },
-    { serialNo: '2026-03-09H1HTA656', keyProcess: 'IM', pmDate: '2026-03-09', workcenter: 'H1HTA656', startTime: '08:00', rowIndex: 4 },
+    { serialNo: '2026-03-06H1HTA656', keyProcess: 'IM', pmDate: '2026-03-06', workcenter: 'H1HTA656', startTime: '16:00', rowIndex: 2 },
+    { serialNo: '2026-03-07H1HTA656', keyProcess: 'TF', pmDate: '2026-03-07', workcenter: 'H1HTA656', startTime: '00:00', rowIndex: 3 },
+    { serialNo: '2026-03-08H1HTA656', keyProcess: 'IM', pmDate: '2026-03-08', workcenter: 'H1HTA656', startTime: '08:00', rowIndex: 4 },
     { serialNo: '2026-03-06H1HTA657', keyProcess: 'IM', pmDate: '2026-03-06', workcenter: 'H1HTA657', startTime: '08:00', rowIndex: 5 },
   ];
 
   const grouped = _pme_groupPmEvents(plans);
 
   assert.equal(grouped.events.length, 3);
-  assert.equal(grouped.events[0].plans.length, 3);
+  assert.equal(grouped.events[0].plans.length, 2);
   assert.equal(grouped.events[0].eventId, 'H1HTA656|2026-03-05');
-  assert.equal(grouped.events[1].eventId, 'H1HTA656|2026-03-09');
+  assert.equal(grouped.events[1].eventId, 'H1HTA656|2026-03-08');
   assert.equal(grouped.events[2].eventId, 'H1HTA657|2026-03-06');
   assert.equal(plans[0].eventId, plans[1].eventId);
-  assert.equal(plans[1].eventId, plans[2].eventId);
-  assert.notEqual(plans[2].eventId, plans[3].eventId);
+  assert.equal(plans[2].eventId, '');
+  assert.notEqual(plans[1].eventId, plans[3].eventId);
 });
 
 test('班次排序：同日 1/2/3，班次 3 后接次日班次 1', () => {
@@ -580,6 +580,23 @@ test('增量计划选择：同一 PM Event 新增或未完成时，整组计划�
   assert.deepEqual(result.map(plan => plan.serialNo), [
     '2026-03-05H1HTA656', '2026-03-06H1HTA656', '2026-03-07H1HTA656',
   ]);
+});
+
+test('增量计划选择：TF 不因同机台连续日期而整组重算', () => {
+  const existing = [
+    _pme_MASTER_HEADERS,
+    masterRow({ serialNo: '2026-03-05T1', productionStatus: '生产' }),
+    masterRow({ serialNo: '2026-03-06T1', productionStatus: '生产' }),
+  ];
+  const plans = [
+    { serialNo: '2026-03-05T1', keyProcess: 'TF', pmDate: '2026-03-05', workcenter: 'T1', rowIndex: 1 },
+    { serialNo: '2026-03-06T1', keyProcess: 'TF', pmDate: '2026-03-06', workcenter: 'T1', rowIndex: 2 },
+    { serialNo: '2026-03-07T1', keyProcess: 'TF', pmDate: '2026-03-07', workcenter: 'T1', rowIndex: 3 },
+  ];
+
+  const result = _pme_selectIncrementalPmPlans(plans, existing);
+
+  assert.deepEqual(result.map(plan => plan.serialNo), ['2026-03-07T1']);
 });
 
 test('增量 Master Data：不删除生产记录，但删除当前计划中已满足排除条件的旧记录', () => {
@@ -1051,6 +1068,21 @@ test('KPI 汇总：同一 PM Event 的多条 Master Data 明细只统计一次',
   const summary = _pme_calculateKpiSummary(rows, ['202603'], new Set(), eventResults, plans);
 
   assert.deepEqual(summary.IM['202603'], { good: 0, bad: 1, total: 1 });
+});
+
+test('KPI 汇总：TF 连续 PM 明细仍按记录分别统计', () => {
+  const rows = [
+    masterRow({ serialNo: '2026-03-05T1', keyProcess: 'TF', workcenter: 'T1', yearMonth: '202603', productionStatus: '生产', performanceStatus: '好/Good' }),
+    masterRow({ serialNo: '2026-03-06T1', keyProcess: 'TF', workcenter: 'T1', yearMonth: '202603', productionStatus: '生产', performanceStatus: '差/Bad' }),
+  ];
+  const plans = [
+    { serialNo: '2026-03-05T1', keyProcess: 'TF', pmDate: '2026-03-05', workcenter: 'T1' },
+    { serialNo: '2026-03-06T1', keyProcess: 'TF', pmDate: '2026-03-06', workcenter: 'T1' },
+  ];
+
+  const summary = _pme_calculateKpiSummary(rows, ['202603'], new Set(), [], plans);
+
+  assert.deepEqual(summary.TF['202603'], { good: 1, bad: 1, total: 2 });
 });
 
 test('KPI Summary 写入：使用既有 2026 行列、Goal 和 YTD，并清理无数据月份', () => {

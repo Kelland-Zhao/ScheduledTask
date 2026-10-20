@@ -211,8 +211,8 @@ function _pme_calendarDayDistance(leftDate, rightDate) {
 }
 
 /**
- * 将同一机台、日期连续的 PM 计划归并为一个内部 PM Event。
- * 不要求工序或开始班次一致；日期出现间隔后开始新的 Event。
+ * 将注塑 IM 中同一机台、日期连续的 PM 计划归并为一个内部 PM Event。
+ * 不要求开始班次一致；日期出现间隔后开始新的 Event。
  * 该 Event 只供 KPI Summary 使用，不改变 Master Data 的明细粒度。
  * @param {Array<Object>} pmPlans
  * @returns {{plans: Array<Object>, events: Array<Object>}}
@@ -230,7 +230,8 @@ function _pme_groupPmEvents(pmPlans) {
   var current = null;
 
   ordered.forEach(function (plan) {
-    if (!plan || !plan.workcenter || !/^\d{4}-\d{2}-\d{2}$/.test(String(plan.pmDate || ""))) {
+    var process = String(plan && plan.keyProcess || "").trim().toUpperCase();
+    if (process !== "IM" || !plan.workcenter || !/^\d{4}-\d{2}-\d{2}$/.test(String(plan.pmDate || ""))) {
       if (plan) plan.eventId = "";
       return;
     }
