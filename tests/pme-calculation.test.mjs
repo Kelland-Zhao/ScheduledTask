@@ -128,6 +128,27 @@ test('PM 计划读取按表头名称，不依赖列顺序', () => {
   assert.equal(result[0].keyProcess, 'TF');
 });
 
+test('PM Event 分组：仅按同机台且连续日期分组，不要求工序或开始班次一致', () => {
+  const plans = [
+    { serialNo: '2026-03-05H1HTA656', keyProcess: 'IM', pmDate: '2026-03-05', workcenter: 'H1HTA656', startTime: '08:00', rowIndex: 1 },
+    { serialNo: '2026-03-06H1HTA656', keyProcess: 'TF', pmDate: '2026-03-06', workcenter: 'H1HTA656', startTime: '16:00', rowIndex: 2 },
+    { serialNo: '2026-03-07H1HTA656', keyProcess: 'IM', pmDate: '2026-03-07', workcenter: 'H1HTA656', startTime: '00:00', rowIndex: 3 },
+    { serialNo: '2026-03-09H1HTA656', keyProcess: 'IM', pmDate: '2026-03-09', workcenter: 'H1HTA656', startTime: '08:00', rowIndex: 4 },
+    { serialNo: '2026-03-06H1HTA657', keyProcess: 'IM', pmDate: '2026-03-06', workcenter: 'H1HTA657', startTime: '08:00', rowIndex: 5 },
+  ];
+
+  const grouped = _pme_groupPmEvents(plans);
+
+  assert.equal(grouped.events.length, 3);
+  assert.equal(grouped.events[0].plans.length, 3);
+  assert.equal(grouped.events[0].eventId, 'H1HTA656|2026-03-05');
+  assert.equal(grouped.events[1].eventId, 'H1HTA656|2026-03-09');
+  assert.equal(grouped.events[2].eventId, 'H1HTA657|2026-03-06');
+  assert.equal(plans[0].eventId, plans[1].eventId);
+  assert.equal(plans[1].eventId, plans[2].eventId);
+  assert.notEqual(plans[2].eventId, plans[3].eventId);
+});
+
 test('班次排序：同日 1/2/3，班次 3 后接次日班次 1', () => {
   const shifts = [
     { shiftKey: '2026-01-02-1', prodDate: '2026-01-02', shift: 1 },
@@ -542,6 +563,25 @@ test('增量计划选择：跳过已生产，仅保留未达144、未匹配和�
   ]);
 });
 
+test('增量计划选择：同一 PM Event 新增或未完成时，整组计划一起重算', () => {
+  const existing = [
+    _pme_MASTER_HEADERS,
+    masterRow({ serialNo: '2026-03-05H1HTA656', productionStatus: '生产' }),
+    masterRow({ serialNo: '2026-03-06H1HTA656', productionStatus: '生产' }),
+  ];
+  const plans = [
+    { serialNo: '2026-03-05H1HTA656', keyProcess: 'IM', pmDate: '2026-03-05', workcenter: 'H1HTA656', rowIndex: 1 },
+    { serialNo: '2026-03-06H1HTA656', keyProcess: 'IM', pmDate: '2026-03-06', workcenter: 'H1HTA656', rowIndex: 2 },
+    { serialNo: '2026-03-07H1HTA656', keyProcess: 'IM', pmDate: '2026-03-07', workcenter: 'H1HTA656', rowIndex: 3 },
+  ];
+
+  const result = _pme_selectIncrementalPmPlans(plans, existing);
+
+  assert.deepEqual(result.map(plan => plan.serialNo), [
+    '2026-03-05H1HTA656', '2026-03-06H1HTA656', '2026-03-07H1HTA656',
+  ]);
+});
+
 test('增量 Master Data：不删除生产记录，但删除当前计划中已满足排除条件的旧记录', () => {
   const headers = _pme_MASTER_HEADERS.concat([
     '根本原因/  Root cause', '预防措施/Preventive action', '状态/Status',
@@ -700,6 +740,50 @@ test('PM 计划没有 AEM PM 记录时返回告警，不强行匹配其他记录
   assert.equal(result.length, 0);
   assert.match(result.warnings[0], /2026-01-02M1/);
   assert.deepEqual(Array.from(result.unmatchedPlanSerials), ['2026-01-02M1']);
+});
+
+test('PM Event KPI：Before 从第一段 PM 开始前计算，After 从最后一段 PM 结束后计算', () => {
+  const plans = [
+    { serialNo: '2026-03-05H1HTA656', keyProcess: 'IM', pmDate: '2026-03-05', workcenter: 'H1HTA656', startTime: '08:00', durationHours: 8, rowIndex: 1 },
+    { serialNo: '2026-03-06H1HTA656', keyProcess: 'IM', pmDate: '2026-03-06', workcenter: 'H1HTA656', startTime: '08:00', durationHours: 8, rowIndex: 2 },
+    { serialNo: '2026-03-07H1HTA656', keyProcess: 'IM', pmDate: '2026-03-07', workcenter: 'H1HTA656', startTime: '08:00', durationHours: 8, rowIndex: 3 },
+  ];
+  const aemRows = [AEM_HEADERS];
+  const addShift = (date, shift, fields = {}) => aemRows.push(aemRow({
+    ProdDate: date, Workcenter: 'H1HTA656', Shift: shift, process: 'IM',
+    Prod_Hours: 8, NetRuntime: 4, PlantAvailableTime: 8, ...fields,
+  }));
+  for (let day = new Date('2026-02-26T00:00:00Z'); day <= new Date('2026-03-04T00:00:00Z'); day.setUTCDate(day.getUTCDate() + 1)) {
+    const date = day.toISOString().slice(0, 10);
+    [1, 2, 3].forEach(shift => addShift(date, shift));
+  }
+  ['2026-03-05', '2026-03-06', '2026-03-07'].forEach(date => {
+    addShift(date, 2, { Prod_Hours: 0, NetRuntime: 0, PlantAvailableTime: 0, PM: 1 });
+  });
+  addShift('2026-03-05', 3);
+  addShift('2026-03-06', 1);
+  addShift('2026-03-06', 3);
+  addShift('2026-03-07', 1);
+  for (let day = new Date('2026-03-08T00:00:00Z'); day <= new Date('2026-03-13T00:00:00Z'); day.setUTCDate(day.getUTCDate() + 1)) {
+    const date = day.toISOString().slice(0, 10);
+    [1, 2, 3].forEach(shift => addShift(date, shift));
+  }
+
+  const result = _pme_calculateMasterRows({
+    pmPlans: plans,
+    aemRows,
+    aemHeaderIndex: _pme_headerIndex(AEM_HEADERS),
+    aemPlanIndex: _pme_buildAemPlanIndex(aemRows, _pme_headerIndex(AEM_HEADERS), new Set(['H1HTA656'])),
+    exclusionRules: [],
+    tfTypeMap: {},
+  });
+
+  assert.equal(result.length, 3);
+  assert.equal(result.kpiEvents.length, 1);
+  assert.equal(result.kpiEvents[0].eventId, 'H1HTA656|2026-03-05');
+  assert.equal(result.kpiEvents[0].beforeProductionAvailableTime, 144);
+  assert.equal(result.kpiEvents[0].afterProductionAvailableTime, 144);
+  assert.equal(result.kpiEvents[0].productionStatus, '生产');
 });
 
 test('Master Data：2025 保留，2026 清理失效计划并保留缺 AEM 的有效计划', () => {
@@ -942,6 +1026,31 @@ test('KPI 汇总：只统计生产且 Good/Bad 的行，并同步统计 TF 子�
   assert.deepEqual(summary['AFT & USW']['202601'], { good: 1, bad: 0, total: 1 });
   assert.deepEqual(summary['HSL & Bou']['202601'], { good: 0, bad: 1, total: 1 });
   assert.deepEqual(summary.Zar['202601'], { good: 0, bad: 0, total: 0 });
+});
+
+test('KPI 汇总：同一 PM Event 的多条 Master Data 明细只统计一次', () => {
+  const rows = [
+    masterRow({ serialNo: '2026-03-05H1HTA656', keyProcess: 'IM', workcenter: 'H1HTA656', yearMonth: '202603', productionStatus: '生产', performanceStatus: '差/Bad' }),
+    masterRow({ serialNo: '2026-03-06H1HTA656', keyProcess: 'IM', workcenter: 'H1HTA656', yearMonth: '202603', productionStatus: '生产', performanceStatus: '差/Bad' }),
+    masterRow({ serialNo: '2026-03-07H1HTA656', keyProcess: 'IM', workcenter: 'H1HTA656', yearMonth: '202603', productionStatus: '生产', performanceStatus: '差/Bad' }),
+  ];
+  const plans = [
+    { serialNo: '2026-03-05H1HTA656', keyProcess: 'IM', pmDate: '2026-03-05', workcenter: 'H1HTA656' },
+    { serialNo: '2026-03-06H1HTA656', keyProcess: 'IM', pmDate: '2026-03-06', workcenter: 'H1HTA656' },
+    { serialNo: '2026-03-07H1HTA656', keyProcess: 'IM', pmDate: '2026-03-07', workcenter: 'H1HTA656' },
+  ];
+  const eventResults = [{
+    eventId: 'H1HTA656|2026-03-05',
+    eligible: true,
+    keyProcess: 'IM',
+    subprocess: 'IM',
+    yearMonth: '202603',
+    performanceStatus: '差/Bad',
+  }];
+
+  const summary = _pme_calculateKpiSummary(rows, ['202603'], new Set(), eventResults, plans);
+
+  assert.deepEqual(summary.IM['202603'], { good: 0, bad: 1, total: 1 });
 });
 
 test('KPI Summary 写入：使用既有 2026 行列、Goal 和 YTD，并清理无数据月份', () => {

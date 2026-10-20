@@ -197,6 +197,64 @@ function _pme_selectPmPlans(rows, headerIndex, targetYear, asOfDate) {
   return plans;
 }
 
+function _pme_calendarDayOrdinal(dateKey) {
+  var parts = String(dateKey || "").split("-").map(Number);
+  if (parts.length !== 3 || parts.some(function (part) { return !Number.isFinite(part); })) return null;
+  return Math.floor(Date.UTC(parts[0], parts[1] - 1, parts[2]) / 86400000);
+}
+
+function _pme_calendarDayDistance(leftDate, rightDate) {
+  var left = _pme_calendarDayOrdinal(leftDate);
+  var right = _pme_calendarDayOrdinal(rightDate);
+  if (left === null || right === null) return null;
+  return Math.abs(left - right);
+}
+
+/**
+ * 将同一机台、日期连续的 PM 计划归并为一个内部 PM Event。
+ * 不要求工序或开始班次一致；日期出现间隔后开始新的 Event。
+ * 该 Event 只供 KPI Summary 使用，不改变 Master Data 的明细粒度。
+ * @param {Array<Object>} pmPlans
+ * @returns {{plans: Array<Object>, events: Array<Object>}}
+ */
+function _pme_groupPmEvents(pmPlans) {
+  var plans = Array.isArray(pmPlans) ? pmPlans : [];
+  var ordered = plans.slice().sort(function (left, right) {
+    var workcenterCompare = String(left.workcenter || "").localeCompare(String(right.workcenter || ""));
+    if (workcenterCompare !== 0) return workcenterCompare;
+    var dateCompare = String(left.pmDate || "").localeCompare(String(right.pmDate || ""));
+    if (dateCompare !== 0) return dateCompare;
+    return Number(left.rowIndex || 0) - Number(right.rowIndex || 0);
+  });
+  var events = [];
+  var current = null;
+
+  ordered.forEach(function (plan) {
+    if (!plan || !plan.workcenter || !/^\d{4}-\d{2}-\d{2}$/.test(String(plan.pmDate || ""))) {
+      if (plan) plan.eventId = "";
+      return;
+    }
+    var sameMachine = current && current.workcenter === plan.workcenter;
+    var dateDistance = sameMachine ? _pme_calendarDayDistance(current.lastPmDate, plan.pmDate) : null;
+    var isConsecutive = sameMachine && dateDistance !== null && dateDistance <= 1;
+    if (!isConsecutive) {
+      current = {
+        eventId: String(plan.workcenter || "") + "|" + String(plan.pmDate || ""),
+        workcenter: plan.workcenter || "",
+        firstPmDate: plan.pmDate || "",
+        lastPmDate: plan.pmDate || "",
+        plans: [],
+      };
+      events.push(current);
+    }
+    plan.eventId = current.eventId;
+    current.plans.push(plan);
+    current.lastPmDate = plan.pmDate || current.lastPmDate;
+  });
+
+  return { plans: plans, events: events };
+}
+
 function _pme_getTodayDateKey() {
   var now = new Date();
   return String(now.getFullYear()) + "-" +
@@ -572,14 +630,36 @@ function _pme_incrementKpiBucket(summary, process, yearMonth, performanceStatus)
   bucket.total = bucket.good + bucket.bad;
 }
 
+function _pme_incrementKpiResult(summary, keyProcess, yearMonth, performanceStatus, subprocess) {
+  var process = String(keyProcess == null ? "" : keyProcess).trim();
+  var month = String(yearMonth == null ? "" : yearMonth).trim();
+  if (!_pme_KPI_PROCESS_CONFIG[process]) return;
+
+  _pme_incrementKpiBucket(summary, process, month, performanceStatus);
+  if (process === "TF") {
+    var tfSubprocess = String(subprocess == null ? "" : subprocess).trim();
+    if (_pme_KPI_PROCESS_CONFIG[tfSubprocess]) {
+      _pme_incrementKpiBucket(summary, tfSubprocess, month, performanceStatus);
+    }
+  }
+}
+
+function _pme_getLatestMasterRow(rows) {
+  return (rows || []).slice().sort(function (left, right) {
+    return String(right[2] == null ? "" : right[2]).localeCompare(String(left[2] == null ? "" : left[2]));
+  })[0] || null;
+}
+
 /**
  * 汇总 Master Data 的 PME 结果。传入的 Master Data 行不含表头。
  * @param {Array<Array<*>>} masterRows
  * @param {Array<string>} months
  * @param {Set<string>=} excludedSerials
+ * @param {Array<Object>=} eventResults 已计算的 PM Event KPI 结果
+ * @param {Array<Object>=} allPmPlans 用于将 Master Data 明细映射到 PM Event
  * @returns {Object<string, Object<string, {good:number,bad:number,total:number}>>}
  */
-function _pme_calculateKpiSummary(masterRows, months, excludedSerials) {
+function _pme_calculateKpiSummary(masterRows, months, excludedSerials, eventResults, allPmPlans) {
   var selectedMonths = _pme_normalizeKpiMonths(months);
   var summary = {};
   Object.keys(_pme_KPI_PROCESS_CONFIG).forEach(function (process) {
@@ -589,7 +669,21 @@ function _pme_calculateKpiSummary(masterRows, months, excludedSerials) {
     });
   });
 
-  (masterRows || []).forEach(function (row) {
+  var eventMode = Array.isArray(eventResults) && Array.isArray(allPmPlans);
+  var eventResultById = {};
+  (eventResults || []).forEach(function (eventResult) {
+    if (eventResult && eventResult.eventId) eventResultById[eventResult.eventId] = eventResult;
+  });
+  var eventIdBySerial = {};
+  var rowsByEvent = {};
+  if (eventMode) {
+    _pme_groupPmEvents(allPmPlans).plans.forEach(function (plan) {
+      var serialNo = String(plan && plan.serialNo != null ? plan.serialNo : "").trim();
+      if (serialNo && plan.eventId) eventIdBySerial[serialNo] = plan.eventId;
+    });
+  }
+
+  var countMasterRow = function (row) {
     if (!_pme_calculateKpiEligibility(row)) return;
     var yearMonth = String(row[11] == null ? "" : row[11]).trim();
     var keyProcess = String(row[1] == null ? "" : row[1]).trim();
@@ -599,14 +693,45 @@ function _pme_calculateKpiSummary(masterRows, months, excludedSerials) {
     if (_pme_isDirectKpiExcludedRow(row)) return;
     if (!_pme_KPI_PROCESS_CONFIG[keyProcess]) return;
 
-    _pme_incrementKpiBucket(summary, keyProcess, yearMonth, row[14]);
-    if (keyProcess === "TF") {
-      var subprocess = String(row[12] == null ? "" : row[12]).trim();
-      if (_pme_KPI_PROCESS_CONFIG[subprocess]) {
-        _pme_incrementKpiBucket(summary, subprocess, yearMonth, row[14]);
-      }
+    _pme_incrementKpiResult(summary, keyProcess, yearMonth, row[14], row[12]);
+  };
+
+  (masterRows || []).forEach(function (row) {
+    if (!eventMode) {
+      countMasterRow(row);
+      return;
     }
+    var serialNo = String(row && row[0] != null ? row[0] : "").trim();
+    var eventId = eventIdBySerial[serialNo];
+    if (!eventId) {
+      countMasterRow(row);
+      return;
+    }
+    if (!rowsByEvent[eventId]) rowsByEvent[eventId] = [];
+    rowsByEvent[eventId].push(row);
   });
+
+  if (eventMode) {
+    Object.keys(rowsByEvent).forEach(function (eventId) {
+      var eventResult = eventResultById[eventId];
+      if (eventResult) {
+        if (!eventResult.eligible) return;
+        if (selectedMonths.indexOf(String(eventResult.yearMonth || "")) === -1) return;
+        _pme_incrementKpiResult(
+          summary,
+          eventResult.keyProcess,
+          eventResult.yearMonth,
+          eventResult.performanceStatus,
+          eventResult.subprocess,
+        );
+        return;
+      }
+
+      // 增量运行没有重算的 Event 保留现有明细的最新一条作为代表，避免重复计数。
+      // 下一次该 Event 出现新增或未达144记录时，会由增量选择器整组重算。
+      countMasterRow(_pme_getLatestMasterRow(rowsByEvent[eventId]));
+    });
+  }
 
   return summary;
 }
@@ -775,6 +900,46 @@ function _pme_filterAemRowsForPlan(plan, aemRows, headerIndex) {
   return filtered;
 }
 
+function _pme_calculateKpiEvent(event, source, aemPlanIndex, headerRow, headerIndex) {
+  var activePlans = (event && event.plans || []).filter(function (plan) {
+    return !_pme_isMasterDataExcluded(plan, source.exclusionRules || []);
+  });
+  var eventResult = {
+    eventId: event && event.eventId || "",
+    eligible: activePlans.length > 0,
+    keyProcess: activePlans.length > 0 ? activePlans[0].keyProcess : "",
+    subprocess: activePlans.length > 0 ? _pme_getSubprocess(activePlans[0], source.tfTypeMap || {}) : "",
+    yearMonth: activePlans.length > 0 ? _pme_getYearMonth(activePlans[0].pmDate) : "",
+    performanceStatus: "",
+  };
+  if (!eventResult.eligible) return eventResult;
+
+  var firstPlan = activePlans[0];
+  var lastPlan = activePlans[activePlans.length - 1];
+  var firstRows = _pme_getAemRowsForPlan(firstPlan, aemPlanIndex, headerRow, headerIndex);
+  for (var index = 0; index < activePlans.length; index++) {
+    var plan = activePlans[index];
+    var planRows = _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow, headerIndex);
+    if (!_pme_findAemPmRecord(plan, planRows, headerIndex)) {
+      eventResult.eligible = false;
+      return eventResult;
+    }
+  }
+
+  var shifts = _pme_aggregateAemShifts(firstRows, headerIndex);
+  var firstWindow = _pme_getMaintenanceWindow(firstPlan);
+  var lastWindow = _pme_getMaintenanceWindow(lastPlan);
+  var beforeShifts = _pme_selectBeforeShifts(firstPlan.keyProcess, shifts, firstWindow.startShiftKey);
+  var afterWindow = _pme_selectAfterWindow(lastPlan.keyProcess, shifts, lastWindow.afterStartShiftKey);
+  var metrics = _pme_calculateMetrics(beforeShifts, afterWindow.rows);
+  Object.keys(metrics).forEach(function (name) {
+    eventResult[name] = metrics[name];
+  });
+  eventResult.productionStatus = metrics.productionStatus;
+  eventResult.performanceStatus = metrics.performanceStatus;
+  return eventResult;
+}
+
 /**
  * 根据已读取的标准化来源计算 Master Data 行。
  * 返回数组本身，并在数组属性 warnings 中附带数据质量告警，保持接口为 Array<Array>。
@@ -810,8 +975,22 @@ function _pme_calculateMasterRows(source) {
     result.push(_pme_buildMasterRow(plan, metrics, subprocess, { excluded: excluded }));
   });
 
+  var eventGroups = source && source.pmEvents;
+  if (!Array.isArray(eventGroups)) {
+    eventGroups = _pme_groupPmEvents(source && source.pmPlans || []).events;
+  }
+  var candidateEventIds = new Set((source && source.pmPlans || []).map(function (plan) {
+    return plan && plan.eventId;
+  }).filter(Boolean));
+  var eventResults = [];
+  eventGroups.forEach(function (event) {
+    if (!candidateEventIds.has(event.eventId)) return;
+    eventResults.push(_pme_calculateKpiEvent(event, source, aemPlanIndex, headerRow, headerIndex));
+  });
+
   result.warnings = warnings;
   result.unmatchedPlanSerials = unmatchedPlanSerials;
+  result.kpiEvents = eventResults;
   return result;
 }
 
@@ -839,9 +1018,18 @@ function _pme_selectIncrementalPmPlans(pmPlans, existingRows) {
     }
   });
 
+  _pme_groupPmEvents(pmPlans || []);
+  var affectedEventIds = new Set();
+  (pmPlans || []).forEach(function (plan) {
+    var serialNo = String(plan && plan.serialNo != null ? plan.serialNo : "").trim();
+    if (!serialNo || statusBySerial[serialNo] !== "生产") {
+      if (plan && plan.eventId) affectedEventIds.add(plan.eventId);
+    }
+  });
+
   return (pmPlans || []).filter(function (plan) {
     var serialNo = String(plan && plan.serialNo != null ? plan.serialNo : "").trim();
-    return !serialNo || statusBySerial[serialNo] !== "生产";
+    return !serialNo || statusBySerial[serialNo] !== "生产" || affectedEventIds.has(plan.eventId);
   });
 }
 
@@ -1240,7 +1428,10 @@ function _pme_loadSourceData(targetYear, asOfDate, options) {
     ["类别", "状态", "开始日期", "开始时间", "AEM#", "保养时间", "工序"],
     "PM Data",
   );
-  var allPmPlans = _pme_selectPmPlans(pmRows, pmHeaderIndex, targetYear, asOfDate);
+  var groupedPmPlans = _pme_groupPmEvents(
+    _pme_selectPmPlans(pmRows, pmHeaderIndex, targetYear, asOfDate),
+  );
+  var allPmPlans = groupedPmPlans.plans;
   var pmPlans = loadOptions.mode === "incremental"
     ? _pme_selectIncrementalPmPlans(allPmPlans, loadOptions.existingRows)
     : allPmPlans;
@@ -1251,6 +1442,7 @@ function _pme_loadSourceData(targetYear, asOfDate, options) {
     return {
       pmPlans: pmPlans,
       allPmPlans: allPmPlans,
+      pmEvents: groupedPmPlans.events,
       aemRows: [],
       aemHeaderIndex: {},
       exclusionRules: exclusionRules,
@@ -1264,6 +1456,7 @@ function _pme_loadSourceData(targetYear, asOfDate, options) {
   return {
     pmPlans: pmPlans,
     allPmPlans: allPmPlans,
+    pmEvents: groupedPmPlans.events,
     aemRows: aem.rows,
     aemHeaderIndex: aem.headerIndex,
     exclusionRules: exclusionRules,
@@ -1548,7 +1741,13 @@ function _pme_runCalculation(event, mode) {
     } else {
       _pme_writeMasterDataRows(masterDataSheet, mergedRows);
     }
-    var summary = _pme_calculateKpiSummary(mergedRows.slice(1), months, excludedSerials);
+    var summary = _pme_calculateKpiSummary(
+      mergedRows.slice(1),
+      months,
+      excludedSerials,
+      calculatedRows.kpiEvents,
+      source.allPmPlans || source.pmPlans,
+    );
 
     _pme_writeKpiSummary(summary, months, kpiSummarySheet);
 
