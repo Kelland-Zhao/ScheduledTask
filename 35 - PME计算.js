@@ -40,6 +40,9 @@ var _pme_MASTER_HEADERS = [
   "绩效状态/ Performance Status",
 ];
 
+var _pme_ARCHIVE_EXEMPT_HEADER = "豁免与否/ Exempt?";
+var _pme_ARCHIVE_EXEMPT_REASON_HEADER = "豁免原因/ Exemption Reason";
+
 var _pme_KPI_PROCESS_CONFIG = {
   "IM": { row2025: 2, row2026: 10 },
   "TF": { row2025: 3, row2026: 11 },
@@ -1057,7 +1060,21 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
   var serialColumn = masterHeaderIndex["序列号/ Serial No."];
   var pmDateColumn = masterHeaderIndex["保养日期/ PM_Date"];
   var workcenterColumn = masterHeaderIndex["机台号/ Workcenter"];
-  var technicianColumns = [15, 16, 17].filter(function (column) { return column < width; });
+  var initialSerials = new Set();
+  var initialIdentityKeys = new Set();
+  current.slice(1).forEach(function (row) {
+    var serial = String(row[serialColumn] == null ? "" : row[serialColumn]).trim();
+    if (serial) initialSerials.add(serial);
+    var identityKey = _pme_masterDataIdentityKey(
+      pmDateColumn === undefined ? "" : row[pmDateColumn],
+      workcenterColumn === undefined ? "" : row[workcenterColumn],
+    );
+    if (identityKey) initialIdentityKeys.add(identityKey);
+  });
+  var manualColumns = [];
+  for (var manualColumn = _pme_MASTER_HEADERS.length; manualColumn < width; manualColumn++) {
+    manualColumns.push(manualColumn);
+  }
   var pendingTechnicianRows = {};
 
   if (targetYear != null && Array.isArray(pmPlans)) {
@@ -1117,10 +1134,11 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
             if (!pendingTechnicianRows[activeKeyForSerial]) {
               pendingTechnicianRows[activeKeyForSerial] = row.slice();
             } else {
-              _pme_mergeTechnicianFields(
+              _pme_mergeManualFields(
                 pendingTechnicianRows[activeKeyForSerial],
                 row,
-                technicianColumns,
+                manualColumns,
+                masterHeaderIndex,
               );
             }
           }
@@ -1130,17 +1148,18 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
         var normalizedWorkcenter = _pme_normalizeWorkcenter(workcenter);
         row[serialColumn] = pmDate + normalizedWorkcenter;
         if (pendingTechnicianRows[identityKey]) {
-          _pme_mergeTechnicianFields(row, pendingTechnicianRows[identityKey], technicianColumns);
+          _pme_mergeManualFields(row, pendingTechnicianRows[identityKey], manualColumns, masterHeaderIndex);
           delete pendingTechnicianRows[identityKey];
         }
         if (rowIndexByIdentity[identityKey] === undefined) {
           rowIndexByIdentity[identityKey] = retainedRows.length;
           retainedRows.push(row);
         } else {
-          _pme_mergeTechnicianFields(
+          _pme_mergeManualFields(
             retainedRows[rowIndexByIdentity[identityKey]],
             row,
-            technicianColumns,
+            manualColumns,
+            masterHeaderIndex,
           );
         }
       });
@@ -1175,32 +1194,66 @@ function _pme_upsertMasterData(existingRows, calculatedRows, pmPlans, targetYear
   }
 
   var rowIndexBySerial = {};
+  var rowIndexByIdentity = {};
   for (var rowIndex = 1; rowIndex < current.length; rowIndex++) {
     var serialNo = String(current[rowIndex][serialColumn] || "").trim();
     if (serialNo && rowIndexBySerial[serialNo] === undefined) rowIndexBySerial[serialNo] = rowIndex;
+    var identityKey = _pme_masterDataIdentityKey(
+      pmDateColumn === undefined ? "" : current[rowIndex][pmDateColumn],
+      workcenterColumn === undefined ? "" : current[rowIndex][workcenterColumn],
+    );
+    if (identityKey && rowIndexByIdentity[identityKey] === undefined) {
+      rowIndexByIdentity[identityKey] = rowIndex;
+    }
   }
 
   (calculatedRows || []).forEach(function (row) {
     var serialNo = String(row && row[0] || "").trim();
     if (!serialNo) return;
-    if (rowIndexBySerial[serialNo] === undefined) {
-      rowIndexBySerial[serialNo] = current.length;
+    var newIdentityKey = _pme_masterDataIdentityKey(row[2], row[3]);
+    var existedAtStart = initialSerials.has(serialNo) ||
+      (newIdentityKey && initialIdentityKeys.has(newIdentityKey));
+    var matchedRowIndex = rowIndexBySerial[serialNo];
+    if (matchedRowIndex === undefined && newIdentityKey) {
+      matchedRowIndex = rowIndexByIdentity[newIdentityKey];
+    }
+
+    if (matchedRowIndex === undefined) {
+      matchedRowIndex = current.length;
       var newRow = _pme_mergeMasterDataRow(row, null, width);
-      var newIdentityKey = _pme_masterDataIdentityKey(row[2], row[3]);
-      if (pendingTechnicianRows[newIdentityKey]) {
-        _pme_mergeTechnicianFields(newRow, pendingTechnicianRows[newIdentityKey], technicianColumns);
+      var priorIdentityRow = pendingTechnicianRows[newIdentityKey] || null;
+      if (priorIdentityRow) {
+        _pme_mergeManualFields(newRow, priorIdentityRow, manualColumns, masterHeaderIndex);
         delete pendingTechnicianRows[newIdentityKey];
       }
+      _pme_applyArchiveFieldValues(newRow, priorIdentityRow, masterHeaderIndex, !existedAtStart);
       current.push(newRow);
     } else {
-      var rowIndex = rowIndexBySerial[serialNo];
-      var existingIdentityKey = _pme_masterDataIdentityKey(row[2], row[3]);
-      if (pendingTechnicianRows[existingIdentityKey]) {
-        _pme_mergeTechnicianFields(current[rowIndex], pendingTechnicianRows[existingIdentityKey], technicianColumns);
-        delete pendingTechnicianRows[existingIdentityKey];
+      var identityRowIndex = newIdentityKey ? rowIndexByIdentity[newIdentityKey] : undefined;
+      if (identityRowIndex !== undefined && identityRowIndex !== matchedRowIndex) {
+        _pme_mergeManualFields(
+          current[matchedRowIndex],
+          current[identityRowIndex],
+          manualColumns,
+          masterHeaderIndex,
+        );
       }
-      current[rowIndex] = _pme_mergeMasterDataRow(row, current[rowIndex], width);
+      if (pendingTechnicianRows[newIdentityKey]) {
+        _pme_mergeManualFields(
+          current[matchedRowIndex],
+          pendingTechnicianRows[newIdentityKey],
+          manualColumns,
+          masterHeaderIndex,
+        );
+        delete pendingTechnicianRows[newIdentityKey];
+      }
+      var existingRow = current[matchedRowIndex];
+      var updatedRow = _pme_mergeMasterDataRow(row, existingRow, width);
+      _pme_applyArchiveFieldValues(updatedRow, existingRow, masterHeaderIndex, !existedAtStart);
+      current[matchedRowIndex] = updatedRow;
     }
+    rowIndexBySerial[serialNo] = matchedRowIndex;
+    if (newIdentityKey) rowIndexByIdentity[newIdentityKey] = matchedRowIndex;
   });
   return current;
 }
@@ -1210,7 +1263,49 @@ function _pme_validateMasterDataHeaders(headers) {
       _pme_MASTER_HEADERS.some(function (name, index) { return headers[index] !== name; })) {
     throw new Error("Master Data 表头前 15 列与 PME 结构不一致");
   }
+  _pme_requireHeaders(
+    headers,
+    [_pme_ARCHIVE_EXEMPT_HEADER, _pme_ARCHIVE_EXEMPT_REASON_HEADER],
+    "Master Data",
+  );
   return true;
+}
+
+function _pme_isCheckedCheckboxValue(value) {
+  if (value === true) return true;
+  return String(value == null ? "" : value).trim().toLowerCase() === "true";
+}
+
+function _pme_applyArchiveFieldValues(targetRow, existingRow, headerIndex, isNew) {
+  var exemptColumn = headerIndex[_pme_ARCHIVE_EXEMPT_HEADER];
+  var reasonColumn = headerIndex[_pme_ARCHIVE_EXEMPT_REASON_HEADER];
+  var statusColumn = headerIndex["生产状态/ Production Status"];
+  if (exemptColumn === undefined || reasonColumn === undefined || statusColumn === undefined) {
+    throw new Error("Master Data 缺少归档豁免字段或生产状态字段");
+  }
+
+  if (isNew) {
+    targetRow[exemptColumn] = false;
+    targetRow[reasonColumn] = "";
+    return targetRow;
+  }
+
+  var productionStatus = String(targetRow[statusColumn] == null ? "" : targetRow[statusColumn]).trim();
+  if (productionStatus === "生产") {
+    targetRow[exemptColumn] = "NA";
+    targetRow[reasonColumn] = "NA";
+  } else if (productionStatus === "未达144") {
+    var oldExempt = existingRow && existingRow[exemptColumn];
+    var oldReason = existingRow && existingRow[reasonColumn];
+    if (_pme_isCheckedCheckboxValue(oldExempt) && String(oldReason == null ? "" : oldReason).trim()) {
+      targetRow[exemptColumn] = oldExempt;
+      targetRow[reasonColumn] = oldReason;
+    } else {
+      targetRow[exemptColumn] = false;
+      targetRow[reasonColumn] = "";
+    }
+  }
+  return targetRow;
 }
 
 function _pme_masterDataIdentityKey(pmDate, workcenter) {
@@ -1220,13 +1315,33 @@ function _pme_masterDataIdentityKey(pmDate, workcenter) {
   return dateKey + "\u0001" + normalizedWorkcenter;
 }
 
-function _pme_mergeTechnicianFields(target, source, columns) {
+/** 将同一条 PME 记录的扩展人工字段合并到目标行。 */
+function _pme_mergeManualFields(target, source, columns, headerIndex) {
+  var exemptColumn = headerIndex && headerIndex[_pme_ARCHIVE_EXEMPT_HEADER];
+  var reasonColumn = headerIndex && headerIndex[_pme_ARCHIVE_EXEMPT_REASON_HEADER];
   (columns || []).forEach(function (column) {
+    if (column === exemptColumn || column === reasonColumn) return;
     if (String(target[column] == null ? "" : target[column]).trim() === "" &&
         String(source[column] == null ? "" : source[column]).trim() !== "") {
       target[column] = source[column];
     }
   });
+
+  if (exemptColumn !== undefined && reasonColumn !== undefined) {
+    var sourceReason = String(!source || source[reasonColumn] == null ? "" : source[reasonColumn]).trim();
+    var targetReason = String(!target || target[reasonColumn] == null ? "" : target[reasonColumn]).trim();
+    var sourceHasWaiver = _pme_isCheckedCheckboxValue(source && source[exemptColumn]) && sourceReason !== "";
+    var targetHasWaiver = _pme_isCheckedCheckboxValue(target && target[exemptColumn]) && targetReason !== "";
+    if (sourceHasWaiver && !targetHasWaiver) {
+      target[exemptColumn] = source[exemptColumn];
+      target[reasonColumn] = source[reasonColumn];
+    } else if (!targetHasWaiver &&
+        String(target[exemptColumn] == null ? "" : target[exemptColumn]).trim() === "" &&
+        targetReason === "") {
+      target[exemptColumn] = source && source[exemptColumn] !== undefined ? source[exemptColumn] : "";
+      target[reasonColumn] = source && source[reasonColumn] !== undefined ? source[reasonColumn] : "";
+    }
+  }
   return target;
 }
 
@@ -1468,15 +1583,17 @@ function _pme_loadSourceData(targetYear, asOfDate, options) {
 function _pme_writeMasterDataRows(sheet, rows) {
   if (!sheet) throw new Error("Master Data Sheet 不存在");
   _pme_validateMasterDataHeaders(rows[0] || []);
-  var width = _pme_MASTER_HEADERS.length;
+  var width = Math.max(_pme_MASTER_HEADERS.length, (rows[0] || []).length);
   var values = (rows || []).map(function (row) {
-    return _pme_mergeMasterDataRow(row, null, width);
+    return _pme_rowToWidth(row, width);
   });
   var existingLastRow = typeof sheet.getLastRow === "function" ? sheet.getLastRow() : values.length;
   if (existingLastRow > values.length && typeof sheet.deleteRows === "function") {
     sheet.deleteRows(values.length + 1, existingLastRow - values.length);
   }
+  _pme_syncArchiveCheckboxValidation(sheet, values.slice(1), 2, _pme_headerIndex(values[0]));
   sheet.getRange(1, 1, values.length, width).setValues(values);
+  _pme_syncArchiveCheckboxValidation(sheet, values.slice(1), 2, _pme_headerIndex(values[0]));
   var dataRowCount = values.length - 1;
   if (dataRowCount > 0) {
     sheet.getRange(2, 5, dataRowCount, 2).setNumberFormat("0");
@@ -1488,15 +1605,26 @@ function _pme_valuesEqual(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function _pme_rowToWidth(row, width) {
+  var values = (row || []).slice(0, width);
+  while (values.length < width) values.push("");
+  return values;
+}
+
 /**
- * 构造增量 Master Data 写入计划。现有行按序列号匹配，避免写回 P:R。
+ * 构造增量 Master Data 写入计划。现有行按序列号匹配，比较并携带整行字段。
  * @param {Array<Array<*>>} existingRows
  * @param {Array<Array<*>>} mergedRows
- * @returns {{deleteRows: Array<number>, updateBlocks: Array<Object>, appendRows: Array<Array<*>>, deletedCount: number, updatedCount: number, addedCount: number}}
+ * @returns {{width: number, deleteRows: Array<number>, updateBlocks: Array<Object>, appendRows: Array<Array<*>>, deletedCount: number, updatedCount: number, addedCount: number}}
  */
 function _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows) {
   var existingData = (existingRows || []).slice(1);
   var mergedData = (mergedRows || []).slice(1);
+  var width = Math.max(
+    _pme_MASTER_HEADERS.length,
+    (existingRows && existingRows[0] || []).length,
+    (mergedRows && mergedRows[0] || []).length,
+  );
   var queues = {};
   existingData.forEach(function (row, index) {
     var serialNo = String(row && row[0] != null ? row[0] : "").trim();
@@ -1514,13 +1642,13 @@ function _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows) {
     var queue = queues[key] || [];
     var existingIndex = queue.shift();
     if (existingIndex === undefined) {
-      appendRows.push((row || []).slice(0, _pme_MASTER_HEADERS.length));
+      appendRows.push(_pme_rowToWidth(row, width));
       return;
     }
 
     matched[existingIndex] = true;
-    var currentValues = existingData[existingIndex].slice(0, _pme_MASTER_HEADERS.length);
-    var nextValues = (row || []).slice(0, _pme_MASTER_HEADERS.length);
+    var currentValues = _pme_rowToWidth(existingData[existingIndex], width);
+    var nextValues = _pme_rowToWidth(row, width);
     if (!_pme_valuesEqual(currentValues, nextValues)) {
       updates.push({ originalIndex: existingIndex, values: nextValues });
     }
@@ -1552,6 +1680,7 @@ function _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows) {
   });
 
   return {
+    width: width,
     deleteRows: deleteRows,
     updateBlocks: updateBlocks,
     appendRows: appendRows,
@@ -1567,8 +1696,40 @@ function _pme_applyMasterDataNumberFormats(sheet, startRow, rowCount) {
   sheet.getRange(startRow, 11, rowCount, 1).setNumberFormat("0.00%");
 }
 
+function _pme_syncArchiveCheckboxValidation(sheet, rows, startRow, headerIndex) {
+  if (!sheet || !Array.isArray(rows) || rows.length === 0) return;
+  var exemptColumn = headerIndex[_pme_ARCHIVE_EXEMPT_HEADER];
+  if (exemptColumn === undefined) throw new Error("Master Data 缺少字段: " + _pme_ARCHIVE_EXEMPT_HEADER);
+
+  var checkboxValidation = SpreadsheetApp.newDataValidation().requireCheckbox().build();
+  var getUsesCheckbox = function (row) {
+    var value = row[exemptColumn];
+    if (String(value == null ? "" : value).trim() === "NA") return false;
+    if (value === true || value === false) return true;
+    var text = String(value == null ? "" : value).trim().toLowerCase();
+    if (text === "true" || text === "false") return true;
+    return null;
+  };
+  var groupStart = 0;
+  var groupUsesCheckbox = getUsesCheckbox(rows[0]);
+  var applyGroup = function (startIndex, endIndex, usesCheckbox) {
+    var range = sheet.getRange(startRow + startIndex, exemptColumn + 1, endIndex - startIndex + 1, 1);
+    if (usesCheckbox) range.setDataValidation(checkboxValidation);
+    else range.clearDataValidations();
+  };
+
+  for (var index = 1; index <= rows.length; index++) {
+    var nextUsesCheckbox = index < rows.length ? getUsesCheckbox(rows[index]) : null;
+    if (index === rows.length || nextUsesCheckbox !== groupUsesCheckbox) {
+      if (groupUsesCheckbox !== null) applyGroup(groupStart, index - 1, groupUsesCheckbox);
+      groupStart = index;
+      groupUsesCheckbox = nextUsesCheckbox;
+    }
+  }
+}
+
 /**
- * 增量写入 Master Data：删除排除行、更新变化的 A:O、追加新行，不触碰 P:R。
+ * 增量写入 Master Data：删除排除行，按行身份写入所有 PME 与人工字段。
  * @param {Object} sheet
  * @param {Array<Array<*>>} existingRows
  * @param {Array<Array<*>>} mergedRows
@@ -1605,16 +1766,24 @@ function _pme_writeMasterDataIncremental(sheet, existingRows, mergedRows) {
   flushDeleteRange();
 
   plan.updateBlocks.forEach(function (block) {
-    sheet.getRange(block.startRow, 1, block.values.length, _pme_MASTER_HEADERS.length).setValues(block.values);
+    _pme_syncArchiveCheckboxValidation(sheet, block.values, block.startRow, _pme_headerIndex(mergedRows[0]));
+    sheet.getRange(block.startRow, 1, block.values.length, plan.width).setValues(block.values);
     _pme_applyMasterDataNumberFormats(sheet, block.startRow, block.values.length);
   });
 
   if (plan.appendRows.length > 0) {
     var appendStartRow = (existingRows || []).length - plan.deletedCount + 1;
-    sheet.getRange(appendStartRow, 1, plan.appendRows.length, _pme_MASTER_HEADERS.length)
+    _pme_syncArchiveCheckboxValidation(sheet, plan.appendRows, appendStartRow, _pme_headerIndex(mergedRows[0]));
+    sheet.getRange(appendStartRow, 1, plan.appendRows.length, plan.width)
       .setValues(plan.appendRows);
     _pme_applyMasterDataNumberFormats(sheet, appendStartRow, plan.appendRows.length);
   }
+  _pme_syncArchiveCheckboxValidation(
+    sheet,
+    (mergedRows || []).slice(1),
+    2,
+    _pme_headerIndex((mergedRows || [])[0] || []),
+  );
   return {
     deletedCount: plan.deletedCount,
     updatedCount: plan.updatedCount,
@@ -1690,6 +1859,12 @@ function _pme_runCalculation(event, mode) {
   var functionName = executionMode === "incremental"
     ? "executePMEIncrementalCalculation"
     : "executePMECalculation";
+  var executionLock = LockService.getScriptLock();
+  if (!executionLock.tryLock(30000)) {
+    var lockError = new Error("无法取得 PME Master Data 共享锁；归档或其他 PME 计算正在运行");
+    _pme_writeExecutionLog("失败", lockError.message, trigger, functionName);
+    throw lockError;
+  }
   try {
     var targetYear = _pme_getExecutionYear(event);
     var mainSpreadsheet = SpreadsheetApp.openById(_pme_CONFIG.mainSpreadsheetId);
@@ -1720,6 +1895,12 @@ function _pme_runCalculation(event, mode) {
     if (executionMode === "incremental") {
       var writePlan = _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows);
       if (writePlan.deletedCount === 0 && writePlan.updatedCount === 0 && writePlan.addedCount === 0) {
+        _pme_syncArchiveCheckboxValidation(
+          masterDataSheet,
+          mergedRows.slice(1),
+          2,
+          _pme_headerIndex(mergedRows[0] || []),
+        );
         var noOpResult = {
           trigger: trigger,
           planCount: source.pmPlans.length,
@@ -1782,6 +1963,8 @@ function _pme_runCalculation(event, mode) {
       functionName,
     );
     throw error;
+  } finally {
+    executionLock.releaseLock();
   }
 }
 
