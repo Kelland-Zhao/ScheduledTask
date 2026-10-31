@@ -146,6 +146,33 @@ function _pme_dateKey(value) {
   return text;
 }
 
+/**
+ * 根据日期计算 ISO 8601 年周，格式 YYYY-Wnn。
+ * 日期无效或为空时返回空字符串。
+ * @param {*} value
+ * @returns {string}
+ */
+function _pme_getIsoWeek(value) {
+  var dateKey = _pme_dateKey(value);
+  var match = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+
+  var year = Number(match[1]);
+  var month = Number(match[2]);
+  var day = Number(match[3]);
+  var date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    return "";
+  }
+
+  var isoDay = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - isoDay);
+  var isoYear = date.getUTCFullYear();
+  var yearStart = new Date(Date.UTC(isoYear, 0, 1));
+  var week = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return String(isoYear) + "-W" + String(week).padStart(2, "0");
+}
+
 function _pme_getCell(row, headerIndex, name) {
   var columnIndex = headerIndex[name];
   return columnIndex === undefined ? "" : row[columnIndex];
@@ -1612,6 +1639,34 @@ function _pme_rowToWidth(row, width) {
 }
 
 /**
+ * 在 Master Data 末尾确保存在「周次」列，并按保养日期回填全部记录。
+ * @param {Array<Array<*>>} rows 含表头行
+ * @returns {Array<Array<*>>}
+ */
+function _pme_populateWeekColumn(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows;
+
+  var headers = rows[0] || [];
+  var headerIndex = _pme_headerIndex(headers);
+  var weekColumn = headerIndex["周次"];
+  if (weekColumn === undefined) {
+    weekColumn = headers.length;
+    headers.push("周次");
+  }
+
+  var pmDateColumn = headerIndex["保养日期/ PM_Date"];
+  if (pmDateColumn === undefined) {
+    throw new Error("Master Data 缺少字段: 保养日期/ PM_Date");
+  }
+
+  rows.slice(1).forEach(function (row) {
+    while (row.length <= weekColumn) row.push("");
+    row[weekColumn] = _pme_getIsoWeek(row[pmDateColumn]);
+  });
+  return rows;
+}
+
+/**
  * 构造增量 Master Data 写入计划。现有行按序列号匹配，比较并携带整行字段。
  * @param {Array<Array<*>>} existingRows
  * @param {Array<Array<*>>} mergedRows
@@ -1739,6 +1794,11 @@ function _pme_writeMasterDataIncremental(sheet, existingRows, mergedRows) {
   if (!sheet) throw new Error("Master Data Sheet 不存在");
   _pme_validateMasterDataHeaders((mergedRows || [])[0] || (existingRows || [])[0] || []);
   var plan = _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows);
+  var existingHeaders = (existingRows || [])[0] || [];
+  var mergedHeaders = (mergedRows || [])[0] || [];
+  if (!_pme_valuesEqual(existingHeaders, mergedHeaders)) {
+    sheet.getRange(1, 1, 1, plan.width).setValues([_pme_rowToWidth(mergedHeaders, plan.width)]);
+  }
 
   var deleteRows = plan.deleteRows.slice().sort(function (left, right) { return right - left; });
   var deleteStart = null;
@@ -1888,13 +1948,16 @@ function _pme_runCalculation(event, mode) {
       source.exclusionRules,
       { mode: executionMode },
     );
+    mergedRows = _pme_populateWeekColumn(mergedRows);
     var months = _pme_getExecutionMonths(event);
     var excludedSerials = _pme_buildExcludedSerials(source.allPmPlans || source.pmPlans, source.exclusionRules);
 
     var writeStats = { deletedCount: 0, updatedCount: 0, addedCount: 0 };
     if (executionMode === "incremental") {
       var writePlan = _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows);
-      if (writePlan.deletedCount === 0 && writePlan.updatedCount === 0 && writePlan.addedCount === 0) {
+      var masterDataHeaderChanged = !_pme_valuesEqual(existingRows[0] || [], mergedRows[0] || []);
+      if (writePlan.deletedCount === 0 && writePlan.updatedCount === 0 &&
+          writePlan.addedCount === 0 && !masterDataHeaderChanged) {
         _pme_syncArchiveCheckboxValidation(
           masterDataSheet,
           mergedRows.slice(1),
