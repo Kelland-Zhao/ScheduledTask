@@ -1618,6 +1618,7 @@ function _pme_writeMasterDataRows(sheet, rows) {
   if (existingLastRow > values.length && typeof sheet.deleteRows === "function") {
     sheet.deleteRows(values.length + 1, existingLastRow - values.length);
   }
+  _pme_ensureMasterDataSheetCapacity(sheet, values.length, width);
   _pme_syncArchiveCheckboxValidation(sheet, values.slice(1), 2, _pme_headerIndex(values[0]));
   sheet.getRange(1, 1, values.length, width).setValues(values);
   _pme_syncArchiveCheckboxValidation(sheet, values.slice(1), 2, _pme_headerIndex(values[0]));
@@ -1639,6 +1640,31 @@ function _pme_rowToWidth(row, width) {
 }
 
 /**
+ * 写入 Master Data 前扩展网格，避免新增行列超出工作表尺寸。
+ * @param {Object} sheet
+ * @param {number} requiredRows
+ * @param {number} requiredColumns
+ */
+function _pme_ensureMasterDataSheetCapacity(sheet, requiredRows, requiredColumns) {
+  var maxRows = sheet.getMaxRows();
+  var maxColumns = sheet.getMaxColumns();
+  var rowCount = Math.max(1, Number(requiredRows) || 1);
+  var columnCount = Math.max(1, Number(requiredColumns) || 1);
+
+  if (maxRows < rowCount) {
+    sheet.insertRowsAfter(maxRows, rowCount - maxRows);
+  }
+  if (maxColumns < columnCount) {
+    sheet.insertColumnsAfter(maxColumns, columnCount - maxColumns);
+  }
+}
+
+function _pme_isWeekHeader(value) {
+  var normalized = String(value == null ? "" : value).trim().toLowerCase().replace(/\s+/g, "");
+  return normalized === "周次" || normalized === "周次/weeknum" || normalized === "weeknum";
+}
+
+/**
  * 在 Master Data 末尾确保存在「周次」列，并按保养日期回填全部记录。
  * @param {Array<Array<*>>} rows 含表头行
  * @returns {Array<Array<*>>}
@@ -1647,13 +1673,17 @@ function _pme_populateWeekColumn(rows) {
   if (!Array.isArray(rows) || rows.length === 0) return rows;
 
   var headers = rows[0] || [];
-  var headerIndex = _pme_headerIndex(headers);
-  var weekColumn = headerIndex["周次"];
+  var weekColumns = [];
+  headers.forEach(function (header, columnIndex) {
+    if (_pme_isWeekHeader(header)) weekColumns.push(columnIndex);
+  });
+  var weekColumn = weekColumns.length > 0 ? weekColumns[0] : undefined;
   if (weekColumn === undefined) {
     weekColumn = headers.length;
     headers.push("周次");
   }
 
+  var headerIndex = _pme_headerIndex(headers);
   var pmDateColumn = headerIndex["保养日期/ PM_Date"];
   if (pmDateColumn === undefined) {
     throw new Error("Master Data 缺少字段: 保养日期/ PM_Date");
@@ -1796,6 +1826,7 @@ function _pme_writeMasterDataIncremental(sheet, existingRows, mergedRows) {
   var plan = _pme_buildIncrementalMasterDataWritePlan(existingRows, mergedRows);
   var existingHeaders = (existingRows || [])[0] || [];
   var mergedHeaders = (mergedRows || [])[0] || [];
+  _pme_ensureMasterDataSheetCapacity(sheet, 1, plan.width);
   if (!_pme_valuesEqual(existingHeaders, mergedHeaders)) {
     sheet.getRange(1, 1, 1, plan.width).setValues([_pme_rowToWidth(mergedHeaders, plan.width)]);
   }
@@ -1824,6 +1855,9 @@ function _pme_writeMasterDataIncremental(sheet, existingRows, mergedRows) {
     }
   });
   flushDeleteRange();
+
+  var requiredRows = (existingRows || []).length - plan.deletedCount + plan.appendRows.length;
+  _pme_ensureMasterDataSheetCapacity(sheet, requiredRows, plan.width);
 
   plan.updateBlocks.forEach(function (block) {
     _pme_syncArchiveCheckboxValidation(sheet, block.values, block.startRow, _pme_headerIndex(mergedRows[0]));
