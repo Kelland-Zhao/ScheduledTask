@@ -18,7 +18,8 @@ var _pme_CONFIG = {
     { label: "2026Q1", id: "1_vWImIpjTvUfDVY-s9Ij5Ajg5h-ayQ8XUbGcN5sEO68", start: "2026-01-01", end: "2026-03-31" },
     { label: "2026Q2", id: "1yTkY1yz4zwiXCzSI8DiHSxWYu4CmBkzsQcKH1_2_Fv8", start: "2026-04-01", end: "2026-06-30" },
     { label: "2026Q3", id: "10o2yG9Fzvlo54e0l71KeAM-QobNvUVC3xPcBZHIinC4", start: "2026-07-01", end: "2026-09-30" },
-    { label: "2026Q4-current", id: "1pKLCZfh8sKv6EcWuEsxH6jAIsjbWHU5_aAusEODnJ_o", start: "2026-10-01", end: "" },
+    { label: "2026Q4", id: "1oqAUPihd5NzksKMigORCeYkns_7-QNIqBhCp7nuHPB4", start: "2026-10-01", end: "2026-12-31", dynamicEnd: "previousMonthEnd" },
+    { label: "当前月", id: "1pKLCZfh8sKv6EcWuEsxH6jAIsjbWHU5_aAusEODnJ_o", start: "", end: "", dynamicStart: "currentMonthStart" },
   ],
 };
 
@@ -107,6 +108,58 @@ function _pme_validateSourceCoverage(sources) {
     }
   }
   return true;
+}
+
+function _pme_formatUtcDateKey(date) {
+  return [date.getUTCFullYear(), date.getUTCMonth() + 1, date.getUTCDate()]
+    .map(function (part, index) {
+      return index === 0 ? String(part) : String(part).padStart(2, "0");
+    })
+    .join("-");
+}
+
+/**
+ * 返回指定日期所在月份的上一个月最后一天，格式 yyyy-MM-dd。
+ * @param {*} value
+ * @returns {string}
+ */
+function _pme_previousMonthEnd(value) {
+  var dateKey = _pme_dateKey(value);
+  var match = dateKey.match(/^(\d{4})-(\d{2})-\d{2}$/);
+  if (!match) return "";
+  return _pme_formatUtcDateKey(new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, 0)));
+}
+
+/**
+ * 解析 AEM 来源的实际读取区间：
+ * - 季度归档只读取到上个月最后一天（当前月完结后才会剪切进归档）
+ * - 当前月快照从本月 1 日开始读取
+ * 起止倒置的来源（例如季度首月尚无归档数据）会被跳过。
+ * @param {*} asOfDate
+ * @returns {Array<Object>}
+ */
+function _pme_resolveAemSources(asOfDate) {
+  var asOfKey = _pme_dateKey(asOfDate || _pme_getTodayDateKey());
+  var match = asOfKey.match(/^(\d{4})-(\d{2})-\d{2}$/);
+  if (!match) return (_pme_CONFIG.aemSources || []).slice();
+
+  var currentMonthStart = asOfKey.slice(0, 7) + "-01";
+  var previousMonthEnd = _pme_previousMonthEnd(asOfKey);
+  return (_pme_CONFIG.aemSources || []).map(function (source) {
+    if (!source) return source;
+    var resolved = {};
+    Object.keys(source).forEach(function (key) {
+      resolved[key] = source[key];
+    });
+    if (source.dynamicStart === "currentMonthStart") resolved.start = currentMonthStart;
+    if (source.dynamicEnd === "previousMonthEnd") {
+      resolved.end = source.end && source.end < previousMonthEnd ? source.end : previousMonthEnd;
+    }
+    return resolved;
+  }).filter(function (source) {
+    if (!source) return false;
+    return !(source.start && source.end && source.start > source.end);
+  });
 }
 
 /**
@@ -972,9 +1025,33 @@ function _pme_calculateKpiEvent(event, source, aemPlanIndex, headerRow, headerIn
 }
 
 /**
+ * 判断计划日期是否落在 AEM 来源覆盖区间内。
+ * 未提供覆盖区间时返回 true，保持旧调用方行为；
+ * 提供空区间时返回 false，避免在来源整体缺失时清空已有指标。
+ * @param {*} dateKey
+ * @param {Array<{start: string, end: string}>=} coverage
+ * @returns {boolean}
+ */
+function _pme_isDateCoveredBySources(dateKey, coverage) {
+  if (!Array.isArray(coverage)) return true;
+  if (coverage.length === 0) return false;
+
+  var key = _pme_dateKey(dateKey);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return true;
+  return coverage.some(function (range) {
+    if (!range) return false;
+    var start = _pme_dateKey(range.start || "");
+    var end = _pme_dateKey(range.end || "");
+    if (start && key < start) return false;
+    if (end && key > end) return false;
+    return true;
+  });
+}
+
+/**
  * 根据已读取的标准化来源计算 Master Data 行。
  * 返回数组本身，并在数组属性 warnings 中附带数据质量告警，保持接口为 Array<Array>。
- * @param {{pmPlans: Array<Object>, aemRows: Array<Array<*>>, aemHeaderIndex: Object, exclusionRules: Array<Object>, tfTypeMap: Object}} source
+ * @param {{pmPlans: Array<Object>, aemRows: Array<Array<*>>, aemHeaderIndex: Object, aemCoverage?: Array<{start: string, end: string}>, exclusionRules: Array<Object>, tfTypeMap: Object}} source
  * @returns {Array<Array<*>>}
  */
 function _pme_calculateMasterRows(source) {
@@ -992,7 +1069,9 @@ function _pme_calculateMasterRows(source) {
     var planRows = _pme_getAemRowsForPlan(plan, aemPlanIndex, headerRow, headerIndex);
     if (!_pme_findAemPmRecord(plan, planRows, headerIndex)) {
       warnings.push("未找到对应 AEM PM 记录: " + plan.serialNo);
-      unmatchedPlanSerials.push(plan.serialNo);
+      if (_pme_isDateCoveredBySources(plan.pmDate, source && source.aemCoverage)) {
+        unmatchedPlanSerials.push(plan.serialNo);
+      }
       return;
     }
 
@@ -1512,16 +1591,18 @@ function _pme_loadTfTypeMap(mainSpreadsheet) {
   return result;
 }
 
-function _pme_readAemSources(eligibleWorkcenters) {
-  _pme_validateSourceCoverage(_pme_CONFIG.aemSources);
+function _pme_readAemSources(eligibleWorkcenters, asOfDate) {
+  var sources = _pme_resolveAemSources(asOfDate);
+  _pme_validateSourceCoverage(sources);
   var allRows = [];
   var sourceHeaders = null;
+  var coverage = [];
   var requiredHeaders = [
     "ProdDate", "Workcenter", "Shift", "Prod_Hours", "NetRuntime",
     "PlantAvailableTime", "PM", "process", "WorkcenterGroup", "CO",
   ];
 
-  _pme_CONFIG.aemSources.forEach(function (source) {
+  sources.forEach(function (source) {
     var spreadsheet = SpreadsheetApp.openById(source.id);
     var sheet = spreadsheet.getSheetByName(_pme_CONFIG.sourceSheetName);
     if (!sheet) throw new Error("AEM 来源缺少 SourceData: " + source.label);
@@ -1531,6 +1612,10 @@ function _pme_readAemSources(eligibleWorkcenters) {
     var headerIndex = _pme_requireHeaders(rows[0], requiredHeaders, "AEM " + source.label + " SourceData");
     var sourceRows = _pme_filterAemRowsBySourceRange(rows, headerIndex, source);
     sourceRows = _pme_filterAemRowsByWorkcenters(sourceRows, headerIndex, eligibleWorkcenters);
+    coverage.push({
+      start: _pme_dateKey(source.start || ""),
+      end: _pme_dateKey(source.end || ""),
+    });
     if (!sourceHeaders) {
       sourceHeaders = rows[0].slice();
       allRows.push(sourceHeaders);
@@ -1545,6 +1630,7 @@ function _pme_readAemSources(eligibleWorkcenters) {
   return {
     rows: allRows,
     headerIndex: _pme_headerIndex(sourceHeaders || []),
+    coverage: coverage,
   };
 }
 
@@ -1588,13 +1674,14 @@ function _pme_loadSourceData(targetYear, asOfDate, options) {
       pmEvents: groupedPmPlans.events,
       aemRows: [],
       aemHeaderIndex: {},
+      aemCoverage: [],
       exclusionRules: exclusionRules,
       tfTypeMap: tfTypeMap,
     };
   }
 
   var eligibleWorkcenters = _pme_buildEligibleWorkcenters(pmPlans);
-  var aem = _pme_readAemSources(eligibleWorkcenters);
+  var aem = _pme_readAemSources(eligibleWorkcenters, asOfDate);
 
   return {
     pmPlans: pmPlans,
@@ -1602,6 +1689,7 @@ function _pme_loadSourceData(targetYear, asOfDate, options) {
     pmEvents: groupedPmPlans.events,
     aemRows: aem.rows,
     aemHeaderIndex: aem.headerIndex,
+    aemCoverage: aem.coverage,
     exclusionRules: exclusionRules,
     tfTypeMap: tfTypeMap,
   };
